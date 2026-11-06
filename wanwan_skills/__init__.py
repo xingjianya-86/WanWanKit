@@ -7,8 +7,8 @@ Plugins(
     allow_empty_prefix=True,
 )
 
-# 导入即注册 @ai_tools；顺序按工具域分组，便于阅读
-# 导入即登记 @on_core_start（每日日记 cron）
-from . import tasks as _tasks  # noqa: F401
-from .tools import diary as _diary  # noqa: F401
-from .tools import media as _media  # noqa: F401
+# 导入即注册 @ai_tools / @on_core_start。放在 Plugins() 之后是有意为之：
+# 先声明插件元数据，再触发各模块的注册副作用，勿移动到文件顶部。
+from . import tasks as _tasks  # noqa: E402, F401
+from .tools import diary as _diary  # noqa: E402, F401
+from .tools import media as _media  # noqa: E402, F401
