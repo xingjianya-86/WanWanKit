@@ -197,17 +197,12 @@ async def diary_illustrate(
     except OSError as exc:
         return f"⚠️ 参考图读取失败：{exc}"
 
-    prompt = (
-        "动漫插画风格，与参考图同一位画师的笔触与配色：深蓝色调、柔和光影。"
-        f"画面：{clean_scene}。"
-    )
+    prompt = f"动漫插画风格，与参考图同一位画师的笔触与配色：深蓝色调、柔和光影。画面：{clean_scene}。"
     if style.strip():
         prompt += f"氛围：{style.strip()}。"
 
     try:
-        img = await ark.generate_image(
-            cfg, prompt, ref_images=[ark.image_to_ref(ref_bytes)]
-        )
+        img = await ark.generate_image(cfg, prompt, ref_images=[ark.image_to_ref(ref_bytes)])
         url = await site.upload_image_bytes(cfg, img, "image/jpeg")
     except (ark.ArkError, site.SiteError) as exc:
         return f"⚠️ 配图生成失败：{exc}"

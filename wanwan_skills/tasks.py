@@ -72,9 +72,7 @@ def _build_event(cfg: WanwanConfig) -> Event:
     )
     if ev.session_id != cfg.session_id:
         # 字段改了会导致播报发错会话，宁可显式告警也不要静默跑偏
-        logger.warning(
-            f"[wanwan] 日记任务 session_id 不匹配: {ev.session_id} != {cfg.session_id}"
-        )
+        logger.warning(f"[wanwan] 日记任务 session_id 不匹配: {ev.session_id} != {cfg.session_id}")
     return ev
 
 
@@ -102,9 +100,7 @@ async def run_daily_diary() -> None:
         logger.error("[wanwan] 日记任务跳过：缺 plugins_configs/wanwan_skills.json")
         return
     if not cfg.session_ready:
-        logger.error(
-            "[wanwan] 日记任务跳过：未配置 ws_bot_id/bot_id/bot_self_id/user_id"
-        )
+        logger.error("[wanwan] 日记任务跳过：未配置 ws_bot_id/bot_id/bot_self_id/user_id")
         return
 
     system_prompt = await _build_system_prompt()

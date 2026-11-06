@@ -83,9 +83,7 @@ def _compress_jpeg(data: bytes, max_bytes: int) -> bytes:
     return out
 
 
-async def _post_generations(
-    cfg: WanwanConfig, payload: dict[str, Any]
-) -> dict[str, Any]:
+async def _post_generations(cfg: WanwanConfig, payload: dict[str, Any]) -> dict[str, Any]:
     url = f"{cfg.ark_base_url}/images/generations"
     # 国内服务直连，不吃容器 HTTP_PROXY
     async with httpx.AsyncClient(timeout=cfg.ark_timeout, trust_env=False) as client:
@@ -106,9 +104,7 @@ async def _download(url: str, timeout: float) -> tuple[bytes, str]:
         head, _, b64 = url.partition(",")
         mime = head[5:].split(";", 1)[0] or "image/jpeg"
         return base64.b64decode(b64), mime
-    async with httpx.AsyncClient(
-        timeout=timeout, follow_redirects=True, trust_env=False
-    ) as client:
+    async with httpx.AsyncClient(timeout=timeout, follow_redirects=True, trust_env=False) as client:
         resp = await client.get(url)
     if resp.status_code >= 400:
         raise ArkError(f"下载生成图片失败 {resp.status_code}")

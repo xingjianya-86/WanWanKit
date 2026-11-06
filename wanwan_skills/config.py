@@ -32,10 +32,7 @@ _DEFAULTS: dict[str, object] = {
     "site_timeout": 60.0,
     "voice_file": "/gsuid_core/data/voice_src/xilian_30s.mp3",
     "ref_image": "/gsuid_core/data/wanwan/wanwan_ref.jpg",
-    "voice_style": (
-        "低沉圆钝、慢半拍，嘴硬心软，像泡在深海里说话，"
-        "尾音轻轻收住，偶尔带一点嗷呜的语气。"
-    ),
+    "voice_style": ("低沉圆钝、慢半拍，嘴硬心软，像泡在深海里说话，尾音轻轻收住，偶尔带一点嗷呜的语气。"),
 }
 
 
@@ -81,9 +78,7 @@ class WanwanConfig:
     @property
     def session_ready(self) -> bool:
         """会话标识是否配齐（缺任一则日记任务无法播报）。"""
-        return bool(
-            self.ws_bot_id and self.bot_id and self.bot_self_id and self.user_id
-        )
+        return bool(self.ws_bot_id and self.bot_id and self.bot_self_id and self.user_id)
 
     @property
     def ark_ready(self) -> bool:
@@ -98,11 +93,7 @@ class WanwanConfig:
     @property
     def site_ready(self) -> bool:
         """日记站点是否可用。"""
-        return (
-            bool(self.site_base_url)
-            and bool(self.site_username)
-            and bool(self.site_password)
-        )
+        return bool(self.site_base_url) and bool(self.site_username) and bool(self.site_password)
 
 
 def _read_password_file(path: str) -> str:

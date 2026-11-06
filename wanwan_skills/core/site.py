@@ -112,9 +112,7 @@ async def publish_note(
         await client.aclose()
 
     if not doc.get("success"):
-        raise SiteError(
-            f"站点拒绝了这次发布：{json.dumps(doc, ensure_ascii=False)[:200]}"
-        )
+        raise SiteError(f"站点拒绝了这次发布：{json.dumps(doc, ensure_ascii=False)[:200]}")
     note_id = doc.get("id")
     link = doc.get("link") or f"/journal/articles/{note_id}"
     absolute = link if str(link).startswith("http") else cfg.site_base_url + str(link)
@@ -146,9 +144,7 @@ async def _post_notes(
     return doc
 
 
-async def upload_image_bytes(
-    cfg: WanwanConfig, data: bytes, mime: str = "image/jpeg"
-) -> str:
+async def upload_image_bytes(cfg: WanwanConfig, data: bytes, mime: str = "image/jpeg") -> str:
     """把图片字节上传到站点，返回可直接用于正文配图的绝对 URL。"""
     if not data:
         raise SiteError("图片数据为空")
@@ -187,9 +183,7 @@ async def upload_image(cfg: WanwanConfig, source_url: str) -> str:
     if not clean:
         raise SiteError("图片 URL 不能为空")
 
-    async with httpx.AsyncClient(
-        timeout=cfg.site_timeout, follow_redirects=True, trust_env=False
-    ) as client:
+    async with httpx.AsyncClient(timeout=cfg.site_timeout, follow_redirects=True, trust_env=False) as client:
         img_resp = await client.get(clean)
         if img_resp.status_code >= 400:
             raise SiteError(f"下载配图失败 {img_resp.status_code}")

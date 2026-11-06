@@ -64,9 +64,7 @@ async def synthesize(cfg: WanwanConfig, text: str) -> bytes:
         raise TtsError(f"MiMo 响应不是合法 JSON: {resp.text[:200]}") from exc
 
     choices = doc.get("choices") if isinstance(doc, dict) else None
-    message = (
-        choices[0].get("message") if isinstance(choices, list) and choices else None
-    )
+    message = choices[0].get("message") if isinstance(choices, list) and choices else None
     audio = message.get("audio") if isinstance(message, dict) else None
     data = audio.get("data") if isinstance(audio, dict) else None
     if not isinstance(data, str) or not data:

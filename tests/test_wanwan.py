@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 import pytest
+
 from wanwan_skills.config import WanwanConfig, load_config
 from wanwan_skills.core import ark, mimo, site
 from wanwan_skills.tools import diary
@@ -39,23 +40,17 @@ def _cfg(**overrides: object) -> WanwanConfig:
 
 
 class TestConfig:
-    def test_missing_file_returns_none(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_missing_file_returns_none(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr("wanwan_skills.config.CONFIG_PATH", tmp_path / "nope.json")
         assert load_config() is None
 
-    def test_invalid_json_returns_none(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_invalid_json_returns_none(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         bad = tmp_path / "wanwan.json"
         bad.write_text("{not json", encoding="utf-8")
         monkeypatch.setattr("wanwan_skills.config.CONFIG_PATH", bad)
         assert load_config() is None
 
-    def test_defaults_merge(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_defaults_merge(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         cfg_file = tmp_path / "wanwan.json"
         cfg_file.write_text(json.dumps({"ark_api_key": "abc"}), encoding="utf-8")
         monkeypatch.setattr("wanwan_skills.config.CONFIG_PATH", cfg_file)
@@ -66,15 +61,11 @@ class TestConfig:
         assert cfg.ark_model == "doubao-seedream-5-0-flash-260915"
         assert cfg.ark_base_url.endswith("/api/plan/v3")
 
-    def test_password_from_file(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_password_from_file(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         pw = tmp_path / "pw.txt"
         pw.write_text("secret123\n", encoding="utf-8")
         cfg_file = tmp_path / "wanwan.json"
-        cfg_file.write_text(
-            json.dumps({"site_password_file": str(pw)}), encoding="utf-8"
-        )
+        cfg_file.write_text(json.dumps({"site_password_file": str(pw)}), encoding="utf-8")
         monkeypatch.setattr("wanwan_skills.config.CONFIG_PATH", cfg_file)
         cfg = load_config()
         assert cfg is not None
@@ -92,9 +83,7 @@ class TestConfig:
         assert _cfg(user_id="").session_ready is False
         assert _cfg(bot_self_id="").session_ready is False
 
-        cfg = _cfg(
-            ws_bot_id="koishi", bot_id="onebot", bot_self_id="10001", user_id="20002"
-        )
+        cfg = _cfg(ws_bot_id="koishi", bot_id="onebot", bot_self_id="10001", user_id="20002")
         assert cfg.session_id == "koishi:onebot:10001:private:20002"
 
 
@@ -234,9 +223,7 @@ class TestDiaryPublish:
         assert "image" in params, "publish_note 应接受 image 参数"
         assert "image_url" not in params, "publish_note 不应有 image_url 参数"
 
-    def test_do_publish_passes_image_kwarg(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_do_publish_passes_image_kwarg(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """do_publish 调 publish_note 时传的 kwarg 必须与真实签名匹配。"""
         import asyncio
 
@@ -258,18 +245,14 @@ class TestDiaryPublish:
 
         # 绕过 _DIARY_DIR：do_publish 用默认目录，这里直接换 diary 路径
         monkeypatch.setattr(diary, "_DIARY_DIR", tmp_path)
-        out = asyncio.run(
-            diary._do_publish(object(), "2026-11-06", image_url="http://x/y.jpg")
-        )
+        out = asyncio.run(diary._do_publish(object(), "2026-11-06", image_url="http://x/y.jpg"))
 
         assert "已发布" in out
         assert captured["image"] == "http://x/y.jpg"
         # title 必须含英文，否则站点派生的 URL 只剩日期（非 ASCII 被剥）
         assert captured["title"] == "Diary 2026-11-06 晚晚的日记"
 
-    def test_do_publish_missing_diary(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_do_publish_missing_diary(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         import asyncio
 
         monkeypatch.setattr(diary, "_DIARY_DIR", tmp_path)
@@ -303,9 +286,7 @@ class TestDiaryPublish:
             async def aclose(self) -> None:
                 return None
 
-            async def post(
-                self, url: str, *, files: object, headers: object
-            ) -> FakeResp:
+            async def post(self, url: str, *, files: object, headers: object) -> FakeResp:
                 return FakeResp()
 
         async def fake_ensure(cfg: object) -> tuple[FakeClient, str]:
