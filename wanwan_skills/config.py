@@ -20,6 +20,10 @@ _DEFAULTS: dict[str, object] = {
     "bot_id": "",
     "bot_self_id": "",
     "user_id": "",
+    # 手机通道：adb over TCP（ZeroTier）。留空则手机类工具返回未配置
+    "phone_serial": "",
+    "phone_ime": "com.sohu.inputmethod.sogou.xiaomi/.SogouIME",
+    "phone_shot_dir": "/gsuid_core/data/wanwan/phone_shots",
     "ark_base_url": "https://ark.cn-beijing.volces.com/api/plan/v3",
     "ark_model": "doubao-seedream-5-0-flash-260915",
     "ark_timeout": 120.0,
@@ -66,6 +70,11 @@ class WanwanConfig:
     bot_self_id: str
     user_id: str
 
+    # 手机通道（adb over TCP）
+    phone_serial: str
+    phone_ime: str
+    phone_shot_dir: str
+
     @property
     def session_id(self) -> str:
         """与 Event.session_id 同格式：{ws}:{bot}:{bot_self}:private:{user}。"""
@@ -79,6 +88,11 @@ class WanwanConfig:
     def session_ready(self) -> bool:
         """会话标识是否配齐（缺任一则日记任务无法播报）。"""
         return bool(self.ws_bot_id and self.bot_id and self.bot_self_id and self.user_id)
+
+    @property
+    def phone_ready(self) -> bool:
+        """手机通道是否已配置 serial。"""
+        return bool(self.phone_serial)
 
     @property
     def ark_ready(self) -> bool:
@@ -159,4 +173,7 @@ def load_config() -> WanwanConfig | None:
         bot_id=_s("bot_id"),
         bot_self_id=_s("bot_self_id"),
         user_id=_s("user_id"),
+        phone_serial=_s("phone_serial"),
+        phone_ime=_s("phone_ime"),
+        phone_shot_dir=_s("phone_shot_dir"),
     )

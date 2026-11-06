@@ -12,3 +12,4 @@ Plugins(
 from . import tasks as _tasks  # noqa: E402, F401
 from .tools import diary as _diary  # noqa: E402, F401
 from .tools import media as _media  # noqa: E402, F401
+from .tools import phone as _phone  # noqa: E402, F401

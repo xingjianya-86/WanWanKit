@@ -34,6 +34,9 @@ def _cfg(**overrides: object) -> WanwanConfig:
         "bot_id": "bot",
         "bot_self_id": "10001",
         "user_id": "20002",
+        "phone_serial": "10.0.0.1:5555",
+        "phone_ime": "ime",
+        "phone_shot_dir": "/tmp/shots",
     }
     base.update(overrides)
     return WanwanConfig(**base)  # type: ignore[arg-type]
@@ -297,6 +300,46 @@ class TestDiaryPublish:
         cfg = _cfg(site_base_url="https://sua17.cn")
         out = asyncio.run(site.upload_image_bytes(cfg, b"\xff\xd8abc"))
         assert out == "https://sua17.cn/media/a.jpg"
+
+
+class TestPhone:
+    """手机模块纯逻辑：UI 树解析与动作白名单（不碰真机）。"""
+
+    def test_parse_ui_extracts_nodes(self) -> None:
+        from wanwan_skills.core.phone import _parse_ui
+
+        xml = (
+            '<?xml version="1.0" encoding="UTF-8"?>'
+            '<hierarchy rotation="0">'
+            '<node bounds="[0,0][1080,200]" text="标题" content-desc="" '
+            'class="android.widget.TextView" clickable="false" />'
+            '<node bounds="[100,300][300,400]" text="" content-desc="按钮" '
+            'class="android.widget.Button" clickable="true" />'
+            '<node bounds="[bad" text="x" />'
+            "</hierarchy>"
+        )
+        nodes = _parse_ui(xml)
+        assert len(nodes) == 2, "坏 bounds 的节点应被跳过"
+        assert nodes[0].text == "标题"
+        assert nodes[0].clickable is False
+        assert nodes[1].clickable is True
+        assert nodes[1].label.startswith("按钮 [可点]")
+        assert nodes[1].center == (200, 350)
+
+    def test_parse_ui_bad_xml_returns_empty(self) -> None:
+        from wanwan_skills.core.phone import _parse_ui
+
+        assert _parse_ui("") == []
+        assert _parse_ui("not xml at all") == []
+
+    def test_action_whitelist(self) -> None:
+        from wanwan_skills.tools.phone import _ACTIONS
+
+        for ok in ("tap", "swipe", "input", "open", "back", "home", "lock", "unlock"):
+            assert ok in _ACTIONS
+        # 危险动作必须被挡住，避免模型构造任意 shell
+        for bad in ("shell", "rm", "reboot", "exec", "am start", ""):
+            assert bad not in _ACTIONS
 
 
 class TestTaskPrompt:
