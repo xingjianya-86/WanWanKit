@@ -175,11 +175,18 @@ def _parse_ui(xml_text: str) -> list[UINode]:
 
 
 async def type_text(serial: str, text: str) -> bool:
-    """用 AdbKeyboard 输入中文。返回是否在界面上看到输入结果。"""
+    """用 AdbKeyboard 输入中文。返回是否在界面上看到输入结果。
+
+    先清空输入框（上次残留会拼在新文字后面），再广播正文。
+    """
     payload = base64.b64encode(text.encode("utf-8")).decode("ascii")
 
     # 切到 AdbKeyboard（失败不致命，继续试广播）
     await adb.shell(serial, "ime", "set", ADB_IME, timeout=20)
+    # 清空输入框：不同版本 action 名不同，两个都试
+    for action in ("ADB_INPUT_CLEAR_TEXT", "ADB_CLEAR_TEXT"):
+        await adb.shell(serial, "am", "broadcast", "-a", action, timeout=15)
+        await asyncio.sleep(0.4)
 
     for _ in range(3):
         await adb.shell(
