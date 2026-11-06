@@ -1,0 +1,16 @@
+[project]
+name = "wanwan_skills"
+version = "0.1.0"
+description = "GsCore 人格技能：日记 / 配图 / 语音，含每日日记定时任务"
+requires-python = ">=3.11"
+dependencies = [
+    "httpx",
+    "Pillow",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "UP"]

@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+# 本地环境与密钥（绝不入库）
+.venv/
+venv/
+*.env
+*.secret

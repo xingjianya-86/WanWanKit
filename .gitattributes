@@ -1,0 +1,14 @@
+# 部署目标是 Linux 容器，统一 LF，避免 CRLF 混入导致加载失败
+* text=auto eol=lf
+*.py text eol=lf
+*.md text eol=lf
+*.toml text eol=lf
+*.json text eol=lf
+
+# 二进制
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.mp3 binary
+*.wav binary
