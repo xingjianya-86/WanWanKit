@@ -268,6 +268,43 @@ async def _locate_publish_stable(serial: str, tries: int = 4) -> tuple[int, int]
     return prev
 
 
+async def _ensure_sheet(serial: str) -> tuple[list, str | None]:
+    """确保评论面板打开（不管输入框）。返回 (nodes, 错误文案 或 None)。"""
+    nodes = await phone.ui(serial)
+    if _sheet_open(nodes):
+        return nodes, None
+    for _ in range(3):
+        entry = _find_comment_entry(nodes)
+        if entry is None:
+            break
+        await phone.tap(serial, *entry.center)
+        await asyncio.sleep(3.0)
+        nodes = await phone.ui(serial)
+        if _sheet_open(nodes):
+            return nodes, None
+    if _has_video_card(nodes):
+        return nodes, "⚠️ 当前在推荐列表，没有打开的视频——先 bilibili_browse 刷到目标再评论"
+    return nodes, "⚠️ 没找到评论入口（这条视频可能不能评论）"
+
+
+async def _wait_input(serial: str, nodes: list):
+    """轮询输入框（面板展开/锁屏唤醒重渲染都有动画空档，只认标题会误判）。
+
+    最多再等 ~6s；找不到时把中下部控件记进日志留诊断。返回 (box|None, nodes)。
+    """
+    box = _find_input(nodes)
+    for _ in range(4):
+        if box is not None:
+            return box, nodes
+        await asyncio.sleep(1.5)
+        nodes = await phone.ui(serial)
+        box = _find_input(nodes)
+    if box is None:
+        bottom = [f"y={n.y1},{_label(n)[:14]!r}" for n in nodes if n.y1 > 1500][:10]
+        logger.warning(f"[wanwan] B站评论输入框未找到，中下部控件: {bottom}")
+    return box, nodes
+
+
 @ai_tools(
     category="common",
     capability_domain=_CAP_DOMAIN,
@@ -414,39 +451,14 @@ async def bilibili_comment(
         async with adb.device(serial), phone.put_away_on_exit(serial):
             await _ensure_bilibili(serial)
             await asyncio.sleep(1.0)
-            nodes = await phone.ui(serial)
 
             # 状态机：面板已开 → 直接用；视频页 → 点右侧「评论」；列表/其它 → 如实失败
-            if not _sheet_open(nodes):
-                opened = False
-                for _ in range(3):
-                    entry = _find_comment_entry(nodes)
-                    if entry is None:
-                        break
-                    await phone.tap(serial, *entry.center)
-                    await asyncio.sleep(3.0)
-                    nodes = await phone.ui(serial)
-                    if _sheet_open(nodes):
-                        opened = True
-                        break
-                if not opened:
-                    if _has_video_card(nodes):
-                        return "⚠️ 当前在推荐列表，没有打开的视频——先 bilibili_browse 刷到目标再评论"
-                    return "⚠️ 没找到评论入口（这条视频可能不能评论）"
+            nodes, err = await _ensure_sheet(serial)
+            if err is not None:
+                return err
 
-            # 输入框轮询：只认到「评论（标题」不等于输入框就位——面板展开动画
-            # 有空档（14:37 两次实测：标题到了、输入框还没挂上就判了失败），
-            # 锁屏唤醒后 sheet 重渲染也一样。最多再等 ~6s。
-            box = _find_input(nodes)
-            for _ in range(4):
-                if box is not None:
-                    break
-                await asyncio.sleep(1.5)
-                nodes = await phone.ui(serial)
-                box = _find_input(nodes)
+            box, nodes = await _wait_input(serial, nodes)
             if box is None:
-                bottom = [f"y={n.y1},{(n.text or n.desc).strip()[:14]!r}" for n in nodes if n.y1 > 1500][:10]
-                logger.warning(f"[wanwan] B站评论输入框未找到，中下部控件: {bottom}")
                 return "⚠️ 评论输入框没找到（这条可能关闭了评论）"
             await phone.tap(serial, *box.center)
             await asyncio.sleep(1.5)
@@ -489,3 +501,102 @@ async def bilibili_comment(
         except Exception:  # noqa: BLE001 —— 截图发不出不影响评论结果
             pass
     return f"✅ 评论已发送：{clean}"
+
+
+@ai_tools(
+    category="common",
+    capability_domain=_CAP_DOMAIN,
+    covers=_COVERS,
+    code_callable=False,
+    timeout=180.0,
+)
+async def bilibili_reply(
+    ctx: RunContext[ToolContext],
+    text: str,
+    target: str = "",
+) -> str:
+    """回复B站当前视频评论区里的某条评论。
+
+    先用 bilibili_browse 停在目标视频（面板开没开都行）。全程不滑动。
+    回复归属是输入框预填的「回复 作者 :」字面前缀——工具会**追加正文
+    不清前缀**，所以只有预填时按钮是灰的，正文上屏后才变粉可点。
+
+    Args:
+        text: 回复正文（30 字内为宜）。
+        target: 回复哪条——评论作者名或内容片段；留空回复热评第一条评论。
+    """
+    cfg = load_config()
+    if cfg is None or not cfg.phone_ready:
+        return "⚠️ 手机通道未配置"
+    serial = cfg.phone_serial
+
+    clean = text.strip()
+    if not clean:
+        return "⚠️ 请提供 text（回复内容）"
+    if clean in _used_comments():
+        return "⚠️ 这句话已经用过了，换一句"
+
+    try:
+        async with adb.device(serial), phone.put_away_on_exit(serial):
+            await _ensure_bilibili(serial)
+            await asyncio.sleep(1.0)
+
+            nodes, err = await _ensure_sheet(serial)
+            if err is not None:
+                return err
+
+            reply_btn = phone.find_reply_button(nodes, target.strip())
+            if reply_btn is None:
+                if target.strip():
+                    return f"⚠️ 评论区里没找到含「{target.strip()}」的评论（换个作者名或内容片段试试）"
+                return "⚠️ 评论区没有可回复的评论"
+
+            # 点「回复」→ 输入框原地带出「回复 作者 :」前缀并聚焦（别再点它，光标会乱）
+            await phone.tap(serial, *reply_btn.center)
+            await asyncio.sleep(2.5)
+
+            nodes = await phone.ui(serial)
+            box, nodes = await _wait_input(serial, nodes)
+            if box is None:
+                return "⚠️ 点了回复但输入框没出来"
+            if "回复" not in _label(box):
+                logger.warning(f"[wanwan] 回复前缀没出现在输入框（{_label(box)[:30]}），可能以普通评论发出")
+
+            # clear=False：只追加正文，保留下「回复 作者 :」归属前缀
+            if not await phone.type_text(serial, clean, clear=False):
+                return "⚠️ 输入未生效（AdbKeyboard 可能没激活）"
+
+            # 正文上屏后按钮才变粉——此刻再定位
+            await asyncio.sleep(random.uniform(1.2, 1.8))
+            send = await _locate_publish_stable(serial)
+            if send is None:
+                await asyncio.sleep(random.uniform(0.8, 1.2))
+                send = await _locate_publish_stable(serial, tries=2)
+            if send is None:
+                logger.warning("[wanwan] B站回复后未找到粉色发布按钮（正文可能没上屏）")
+                return "⚠️ 没找到发布按钮，回复未发出"
+
+            await phone.tap(serial, *send)
+            cleared = False
+            for _ in range(6):
+                await asyncio.sleep(1.5)
+                if await phone.input_cleared(serial, clean):
+                    cleared = True
+                    break
+            if not cleared:
+                logger.warning("[wanwan] B站回复后输入框 9s 未清空，放弃（不重发，避免重复回复）")
+                return "⚠️ 发布未确认（输入框未清空），回复可能未发出"
+
+            shot = await phone.screenshot(serial, cfg, name="bilibili_reply")
+    except adb.AdbError as exc:
+        return f"⚠️ {exc}"
+
+    _mark_comment_used(clean)
+    logger.info(f"[wanwan] B站回复已发：{clean[:40]}")
+
+    if ctx.deps.allow_user_outbound and ctx.deps.bot is not None:
+        try:
+            await ctx.deps.bot.send(MessageSegment.image(shot))
+        except Exception:  # noqa: BLE001 —— 截图发不出不影响回复结果
+            pass
+    return f"✅ 回复已发送：{clean}"

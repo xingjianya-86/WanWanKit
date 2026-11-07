@@ -273,11 +273,9 @@ async def douyin_comment(
             await asyncio.sleep(1.0)
 
             # 找「评论」按钮——只在当前这条上找，绝不滑动换视频（滑走会评论错条）
-            btn = await _locate_comment_btn(serial)
-            if btn is None:
-                return "⚠️ 当前这条没有评论按钮（直播/广告），本工具不换视频——请先用 douyin_browse 换一条"
-            if not await _open_comment_panel(serial, btn):
-                return "⚠️ 评论面板没打开（可能点偏或界面异常）"
+            err = await _ensure_panel(serial)
+            if err is not None:
+                return err
 
             # 点底部输入条展开面板，再点真正的输入框聚焦（否则键盘不上屏）。
             # 输入框轮询：面板判定到输入框挂载之间有动画空档（11:17 实测误判过一次）
@@ -342,6 +340,125 @@ async def douyin_comment(
         except Exception:  # noqa: BLE001 —— 截图发不出不影响评论结果
             pass
     return f"✅ 评论已发送：{clean}"
+
+
+async def _ensure_panel(serial: str) -> str | None:
+    """确保当前视频的评论面板打开（不滑动）。返回错误文案或 None。"""
+    btn = await _locate_comment_btn(serial)
+    if btn is None:
+        return "⚠️ 当前这条没有评论按钮（直播/广告），本工具不换视频——请先用 douyin_browse 换一条"
+    if not await _open_comment_panel(serial, btn):
+        return "⚠️ 评论面板没打开（可能点偏或界面异常）"
+    return None
+
+
+@ai_tools(
+    category="common",
+    capability_domain=_CAP_DOMAIN,
+    covers=_COVERS,
+    code_callable=False,
+    timeout=180.0,
+)
+async def douyin_reply(
+    ctx: RunContext[ToolContext],
+    text: str,
+    target: str = "",
+) -> str:
+    """回复抖音当前视频评论区里的某条评论。
+
+    先用 douyin_browse 停在目标视频。全程不滑动换视频。
+    回复归属是输入框预填的「回复 @作者」字面前缀——工具**追加正文不清
+    前缀**；只有预填时发送按钮是灰的，正文上屏后才变红可点。
+
+    Args:
+        text: 回复正文（30 字内为宜）。
+        target: 回复哪条——评论作者名或内容片段；留空回复第一条评论。
+    """
+    cfg = load_config()
+    if cfg is None or not cfg.phone_ready:
+        return "⚠️ 手机通道未配置"
+    serial = cfg.phone_serial
+
+    clean = text.strip()
+    if not clean:
+        return "⚠️ 请提供 text（回复内容）"
+    if clean in _used_comments():
+        return "⚠️ 这句话已经用过了，换一句"
+
+    try:
+        async with adb.device(serial), phone.put_away_on_exit(serial):
+            await _ensure_douyin(serial)
+            await asyncio.sleep(1.0)
+
+            err = await _ensure_panel(serial)
+            if err is not None:
+                return err
+
+            nodes = await phone.ui(serial)
+            reply_btn = phone.find_reply_button(nodes, target.strip())
+            if reply_btn is None:
+                if target.strip():
+                    return f"⚠️ 评论区里没找到含「{target.strip()}」的评论（换个作者名或内容片段试试）"
+                return "⚠️ 评论区没有可回复的评论"
+
+            # 点「回复」→ 输入框原地带出「回复 @作者」并聚焦（别再点它，光标会乱）
+            await phone.tap(serial, *reply_btn.center)
+            await asyncio.sleep(2.5)
+
+            # 轮询回复态输入框（带前缀的 EditText，已聚焦）
+            box = None
+            for _ in range(4):
+                nodes = await phone.ui(serial)
+                box = next((n for n in nodes if n.cls == "EditText" and "回复" in (n.text or "")), None)
+                if box is None:
+                    box = next((n for n in nodes if n.cls == "EditText" and n.y1 > 400), None)
+                if box is not None:
+                    break
+                await asyncio.sleep(1.5)
+            if box is None:
+                return "⚠️ 点了回复但输入框没出来"
+            if "回复" not in (box.text or ""):
+                logger.warning(f"[wanwan] 回复前缀没出现在输入框（{(box.text or '')[:30]}），可能以普通评论发出")
+
+            # clear=False：只追加正文，保留下「回复 @作者」归属前缀
+            if not await phone.type_text(serial, clean, clear=False):
+                return "⚠️ 输入未生效（AdbKeyboard 可能没激活）"
+
+            # 正文上屏后按钮才变红——等动画再连续两次稳定定位
+            await asyncio.sleep(random.uniform(1.6, 2.4))
+            send = await _locate_send_stable(serial)
+            if send is None:
+                await asyncio.sleep(random.uniform(0.8, 1.2))
+                send = await _locate_send_stable(serial, tries=2)
+            if send is None:
+                logger.warning("[wanwan] 抖音回复后未找到红色发送按钮（正文可能没上屏）")
+                return "⚠️ 没找到发送按钮，回复未发出"
+
+            await phone.tap(serial, *send)
+            cleared = False
+            for _ in range(6):
+                await asyncio.sleep(1.5)
+                if await phone.input_cleared(serial, clean):
+                    cleared = True
+                    break
+            if not cleared:
+                await _abort_panel(serial)
+                logger.warning("[wanwan] 抖音回复后输入框 9s 未清空，放弃（不重发，避免重复回复）")
+                return "⚠️ 发送未确认（输入框未清空），回复可能未发出"
+
+            shot = await phone.screenshot(serial, cfg, name="douyin_reply")
+    except adb.AdbError as exc:
+        return f"⚠️ {exc}"
+
+    _mark_comment_used(clean)
+    logger.info(f"[wanwan] 抖音回复已发：{clean[:40]}")
+
+    if ctx.deps.allow_user_outbound and ctx.deps.bot is not None:
+        try:
+            await ctx.deps.bot.send(MessageSegment.image(shot))
+        except Exception:  # noqa: BLE001 —— 截图发不出不影响回复结果
+            pass
+    return f"✅ 回复已发送：{clean}"
 
 
 async def _locate_send_stable(serial: str, tries: int = 4) -> tuple[int, int] | None:

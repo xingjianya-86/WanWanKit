@@ -467,6 +467,56 @@ class TestBilibiliCards:
         assert _find_comment_entry([left]) is None
 
 
+class TestReplyTarget:
+    """回复目标锚定：找错评论等于回复错人。"""
+
+    @staticmethod
+    def _nodes() -> list:
+        from wanwan_skills.core.phone import UINode
+
+        def n(text: str, y1: int, *, cls: str = "TextView", click: bool = True, x1: int = 140) -> UINode:
+            return UINode(text=text, desc="", cls=cls, clickable=click, x1=x1, y1=y1, x2=x1 + 300, y2=y1 + 50)
+
+        return [
+            # 第一条评论：作者 → 内容 → 回复
+            n("深圳lightning", 1027),
+            n("骁龙855老将还能跑这么快", 1084, click=False),
+            n("回复", 1166, x1=299),
+            n("展开38条回复", 1217, x1=220),  # 不是动作按钮，必须被排除
+            # 第二条评论
+            n("观星者BIN", 1304),
+            n("这机器甚至还能刷win11", 1348, click=False),
+            n("回复", 1792, x1=330),
+            # 残留在输入框里的前缀（EditText 不能当锚点）
+            n("回复 @别人", 934, cls="EditText", x1=30),
+        ]
+
+    def test_default_targets_first_comment(self) -> None:
+        from wanwan_skills.core.phone import find_reply_button
+
+        btn = find_reply_button(self._nodes())
+        assert btn is not None and btn.y1 == 1166
+
+    def test_target_matches_author_and_content(self) -> None:
+        from wanwan_skills.core.phone import find_reply_button
+
+        by_author = find_reply_button(self._nodes(), "观星者BIN")
+        assert by_author is not None and by_author.y1 == 1792
+        by_content = find_reply_button(self._nodes(), "骁龙855")
+        assert by_content is not None and by_content.y1 == 1166
+
+    def test_target_not_found(self) -> None:
+        from wanwan_skills.core.phone import find_reply_button
+
+        assert find_reply_button(self._nodes(), "不存在的人") is None
+
+    def test_edittext_prefix_not_used_as_anchor(self) -> None:
+        """输入框残留的「回复 @别人」不能把目标锚到第一条的按钮上。"""
+        from wanwan_skills.core.phone import find_reply_button
+
+        assert find_reply_button(self._nodes(), "别人") is None
+
+
 class TestDouyinJunk:
     """直播 / 广告卡片必须被识别跳过。"""
 

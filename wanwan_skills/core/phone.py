@@ -194,24 +194,27 @@ def _parse_ui(xml_text: str) -> list[UINode]:
     return nodes
 
 
-async def type_text(serial: str, text: str) -> bool:
+async def type_text(serial: str, text: str, *, clear: bool = True) -> bool:
     """用 AdbKeyboard 输入中文。返回是否在界面上看到输入结果。
 
-    先读输入框现有长度、用批量 DEL 清空（ADB_INPUT_CLEAR_TEXT 在
-    抖音上不生效，不清会把新旧文字拼在一起），再广播正文。
+    clear=True（默认）：先读输入框现有长度、批量 DEL 清空
+    （ADB_INPUT_CLEAR_TEXT 在抖音上不生效，不清会把新旧文字拼在一起），再广播正文。
+    clear=False（回复场景）：输入框已预填「回复 @xxx」归属前缀，
+    **只能追加不能清**——清掉归属，回复就变成普通评论了。
     """
     payload = base64.b64encode(text.encode("utf-8")).decode("ascii")
 
     # 切到 AdbKeyboard（失败不致命，继续试广播）
     await adb.shell(serial, "ime", "set", ADB_IME, timeout=20)
 
-    # 批量删掉残留：keyevent 67=DEL，一次可带多个
-    nodes = await ui(serial)
-    existing = max((len(n.text) for n in nodes if is_input_node(n) and n.text), default=0)
-    if existing:
-        dels = ["67"] * min(existing + 3, 60)
-        await adb.shell(serial, "input", "keyevent", *dels, timeout=25)
-        await _async_sleep(0.8)
+    if clear:
+        # 批量删掉残留：keyevent 67=DEL，一次可带多个
+        nodes = await ui(serial)
+        existing = max((len(n.text) for n in nodes if is_input_node(n) and n.text), default=0)
+        if existing:
+            dels = ["67"] * min(existing + 3, 60)
+            await adb.shell(serial, "input", "keyevent", *dels, timeout=25)
+            await _async_sleep(0.8)
 
     for _ in range(3):
         await adb.shell(
@@ -242,6 +245,30 @@ async def type_text(serial: str, text: str) -> bool:
                 return False
         # dump 正常但确实没上屏 → 真没播进去，才允许重播
     return False
+
+
+def find_reply_button(nodes: list, target: str = ""):
+    """评论区里找要回复的那条评论的「回复」按钮。
+
+    target 空 → 回复第一条（热评）；否则用作者名/内容片段锚定那条评论
+    （跳过 EditText——输入框里残留的「回复 @xx」前缀不能当锚点），
+    取它下方最近的「回复」。找不到返回 None，由调用方如实报告。
+    只认整词「回复」，排除「展开N条回复」。
+    """
+    btns = [n for n in nodes if n.clickable and (n.text or n.desc or "").strip() == "回复" and n.y1 > 900]
+    if not btns:
+        return None
+    if not target:
+        return min(btns, key=lambda b: b.y1)
+
+    anchors = [n for n in nodes if target in (n.text or n.desc or "") and n.y1 > 900 and n.cls != "EditText"]
+    if not anchors:
+        return None
+    anchor_y = min(n.y1 for n in anchors)
+    below = [b for b in btns if b.y1 >= anchor_y - 20]
+    if not below:
+        return None
+    return min(below, key=lambda b: b.y1)
 
 
 async def input_cleared(serial: str, text: str) -> bool:
