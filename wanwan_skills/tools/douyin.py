@@ -129,11 +129,14 @@ async def _ensure_douyin(serial: str) -> None:
 
 
 async def _phone_put_away(serial: str) -> None:
-    """收手机：后台结束抖音 + 锁屏（用完就收，别亮着屏耗电）。"""
+    """收手机：锁屏（息屏即收，别亮着屏耗电）。
+
+    **不杀进程**——重开要能精确恢复到刚看的那条；杀进程会让 Douyin
+    重新落到别的视频上，评论就落错条（实测发生过）。
+    """
     try:
-        await adb.shell(serial, "am", "force-stop", DOUYIN_PKG, timeout=15)
         await phone.lock(serial)
-        logger.info("[wanwan] 收手机：已结束抖音并锁屏")
+        logger.info("[wanwan] 收手机：已锁屏（抖音留后台，重开恢复原位）")
     except adb.AdbError as exc:
         logger.warning(f"[wanwan] 收手机失败: {exc}")
 
@@ -182,8 +185,8 @@ async def douyin_browse(
 ) -> str:
     """刷抖音：连看几条视频，返回清单（作者/描述/赞/评）。
 
-    读操作，不点赞不评论。**刷完自动收手机**（后台结束抖音 + 锁屏）；
-    之后再调 douyin_comment 会重新打开抖音（一般恢复到刚看的这条附近）。
+    读操作，不点赞不评论。**刷完自动锁屏收手机**（抖音留后台，
+    重开精确恢复到这条）；之后 douyin_comment 评论的就是这条，全程不滑动。
 
     Args:
         limit: 看几条，默认 5，最大 15。
@@ -232,7 +235,7 @@ async def douyin_browse(
                     await _swipe_next(serial)
 
             shot = await phone.screenshot(serial, cfg, name="douyin")
-            # 刷完收手机：后台结束抖音 + 锁屏
+            # 刷完收手机：锁屏（抖音留后台，重开恢复到这条）
             await _phone_put_away(serial)
     except adb.AdbError as exc:
         return f"⚠️ {exc}"
@@ -267,6 +270,8 @@ async def douyin_comment(
     """给**当前正在看的这条**抖音视频发评论。
 
     先用 douyin_browse 刷到目标视频再调本工具。同一句话不重复发。
+    **全程不滑动换视频**：当前这条没评论按钮（直播/广告）会如实返回，
+    不会自己刷走导致评论落错条。
 
     Args:
         text: 评论正文（简短口语化，30 字内为宜）。
@@ -287,10 +292,10 @@ async def douyin_comment(
             await _ensure_douyin(serial)
             await asyncio.sleep(1.0)
 
-            # 找「评论」按钮；遇到直播卡片/广告等无评论按钮的内容，上滑跳过
+            # 找「评论」按钮——只在当前这条上找，绝不滑动换视频（滑走会评论错条）
             btn = await _locate_comment_btn(serial)
             if btn is None:
-                return "⚠️ 连刷 5 条都没找到评论按钮（可能一直在直播/广告页）"
+                return "⚠️ 当前这条没有评论按钮（直播/广告），本工具不换视频——请先用 douyin_browse 换一条"
             if not await _open_comment_panel(serial, btn):
                 return "⚠️ 评论面板没打开（可能点偏或界面异常）"
 
@@ -416,19 +421,19 @@ async def _close_comment_panel(serial: str, attempts: int = 3) -> bool:
     return False
 
 
-async def _locate_comment_btn(serial: str, retries: int = 5) -> object | None:
-    """找视频侧栏的文字评论按钮。
+async def _locate_comment_btn(serial: str, attempts: int = 3) -> object | None:
+    """只在**当前这条**视频上找评论按钮，找不到也绝不滑走。
 
-    第一次先关掉可能残留的评论面板；之后上滑跳过直播/广告等无按钮内容。
+    评论必须落在「现在看着的这条」上：上滑换视频会让评论落错条
+    （实测落到了旧广告视频）。没按钮（直播/广告）就如实返回 None，
+    由调用方报告，让模型自己决定换哪条。
     """
-    for i in range(retries):
+    for i in range(attempts):
         btn = await _find_comment_btn(serial)
         if btn is not None:
             return btn
-        if i == 0:
-            await _close_comment_panel(serial)
-        else:
-            await _swipe_next(serial)
+        if i < attempts - 1:
+            await asyncio.sleep(1.2)  # 等界面动画/加载，不滑动
     return None
 
 
