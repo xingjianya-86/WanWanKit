@@ -389,7 +389,7 @@ async def bilibili_comment(
                     if entry is None:
                         break
                     await phone.tap(serial, *entry.center)
-                    await asyncio.sleep(2.5)
+                    await asyncio.sleep(3.0)
                     nodes = await phone.ui(serial)
                     if _sheet_open(nodes):
                         opened = True
@@ -399,9 +399,19 @@ async def bilibili_comment(
                         return "⚠️ 当前在推荐列表，没有打开的视频——先 bilibili_browse 刷到目标再评论"
                     return "⚠️ 没找到评论入口（这条视频可能不能评论）"
 
-            # 输入框
+            # 输入框轮询：只认到「评论（标题」不等于输入框就位——面板展开动画
+            # 有空档（14:37 两次实测：标题到了、输入框还没挂上就判了失败），
+            # 锁屏唤醒后 sheet 重渲染也一样。最多再等 ~6s。
             box = _find_input(nodes)
+            for _ in range(4):
+                if box is not None:
+                    break
+                await asyncio.sleep(1.5)
+                nodes = await phone.ui(serial)
+                box = _find_input(nodes)
             if box is None:
+                bottom = [f"y={n.y1},{(n.text or n.desc).strip()[:14]!r}" for n in nodes if n.y1 > 1500][:10]
+                logger.warning(f"[wanwan] B站评论输入框未找到，中下部控件: {bottom}")
                 return "⚠️ 评论输入框没找到（这条可能关闭了评论）"
             await phone.tap(serial, *box.center)
             await asyncio.sleep(1.5)

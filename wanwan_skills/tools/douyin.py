@@ -279,8 +279,14 @@ async def douyin_comment(
             if not await _open_comment_panel(serial, btn):
                 return "⚠️ 评论面板没打开（可能点偏或界面异常）"
 
-            # 点底部输入条展开面板，再点真正的输入框聚焦（否则键盘不上屏）
-            box = await _find_comment_input(serial)
+            # 点底部输入条展开面板，再点真正的输入框聚焦（否则键盘不上屏）。
+            # 输入框轮询：面板判定到输入框挂载之间有动画空档（11:17 实测误判过一次）
+            box = None
+            for _ in range(4):
+                box = await _find_comment_input(serial)
+                if box is not None:
+                    break
+                await asyncio.sleep(1.5)
             if box is None:
                 return "⚠️ 没找到评论输入框"
             await phone.tap(serial, *box.center)
