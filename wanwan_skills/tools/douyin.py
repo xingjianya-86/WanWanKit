@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import random
 import re
@@ -108,16 +109,42 @@ def _junk_reason(nodes: list) -> str:
 
 
 async def _ensure_douyin(serial: str) -> None:
-    """确保抖音在前台，且没有残留的评论/语音面板。
+    """确保抖音在前台（含亮屏/解锁），且没有残留的评论/语音面板。
 
     面板开着时 swipe 会滑到面板上而不是切视频——browse 必须先关。
+    上一轮用完可能已收手机（结束 App + 锁屏），所以先唤醒解锁再判断前台。
     """
-    _, _, app = await phone.screen_state(serial)
+    awake, locked, app = await phone.screen_state(serial)
+    if not awake or locked:
+        res = await phone.unlock(serial)
+        if res.startswith("ERROR"):
+            logger.warning(f"[wanwan] 解锁失败: {res}")
+        await asyncio.sleep(1.0)
+        _, locked, app = await phone.screen_state(serial)
     if app != DOUYIN_PKG:
         await phone.launch(serial, DOUYIN_PKG)
         await asyncio.sleep(6)
         return
     await _close_comment_panel(serial)
+
+
+async def _phone_put_away(serial: str) -> None:
+    """收手机：后台结束抖音 + 锁屏（用完就收，别亮着屏耗电）。"""
+    try:
+        await adb.shell(serial, "am", "force-stop", DOUYIN_PKG, timeout=15)
+        await phone.lock(serial)
+        logger.info("[wanwan] 收手机：已结束抖音并锁屏")
+    except adb.AdbError as exc:
+        logger.warning(f"[wanwan] 收手机失败: {exc}")
+
+
+@contextlib.asynccontextmanager
+async def _put_away_on_exit(serial: str):
+    """with 块退出时收手机（成功、失败、异常都收）。"""
+    try:
+        yield
+    finally:
+        await _phone_put_away(serial)
 
 
 async def _swipe_next(serial: str) -> None:
@@ -155,8 +182,8 @@ async def douyin_browse(
 ) -> str:
     """刷抖音：连看几条视频，返回清单（作者/描述/赞/评）。
 
-    读操作，不点赞不评论。看完后 App 停在最后一条，
-    后续 douyin_comment 评论的就是这条。
+    读操作，不点赞不评论。**刷完自动收手机**（后台结束抖音 + 锁屏）；
+    之后再调 douyin_comment 会重新打开抖音（一般恢复到刚看的这条附近）。
 
     Args:
         limit: 看几条，默认 5，最大 15。
@@ -205,6 +232,8 @@ async def douyin_browse(
                     await _swipe_next(serial)
 
             shot = await phone.screenshot(serial, cfg, name="douyin")
+            # 刷完收手机：后台结束抖音 + 锁屏
+            await _phone_put_away(serial)
     except adb.AdbError as exc:
         return f"⚠️ {exc}"
 
@@ -254,7 +283,7 @@ async def douyin_comment(
         return "⚠️ 这句话已经评论过了，换一句"
 
     try:
-        async with adb.device(serial):
+        async with adb.device(serial), _put_away_on_exit(serial):
             await _ensure_douyin(serial)
             await asyncio.sleep(1.0)
 

@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import traceback
 from datetime import datetime
 from pathlib import Path
 
@@ -160,13 +159,6 @@ async def _do_publish(
     image_url: str = "",
 ) -> str:
     """发布核心：读当天日记 → 交给站点。参数名必须与 site.publish_note 对齐。"""
-    # TEMP-TRACE：抓「非今天的日期被反复发布」的调用来源（排查完移除）
-    if date_str != _today():
-        logger.warning(
-            f"[wanwan] TEMP-TRACE diary_publish 异常日期 {date_str}"
-            f"（今天 {_today()}）调用栈:\n" + "".join(traceback.format_stack()[:-1])
-        )
-
     path = _diary_path(date_str)
     if not path.exists():
         return f"⚠️ {date_str} 没有日记，先写再发"
