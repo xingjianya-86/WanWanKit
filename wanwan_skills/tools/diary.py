@@ -5,6 +5,9 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
+import traceback
 from datetime import datetime
 from pathlib import Path
 
@@ -27,6 +30,27 @@ _COVERS = [
 ]
 
 _DIARY_DIR = get_res_path(["wanwan", "diary"])
+_PUBLISHED_FILE = get_res_path(["wanwan", ".diary_published.json"])
+
+
+def _content_sha(content: str) -> str:
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()[:16]
+
+
+def _load_published() -> dict:
+    try:
+        data = json.loads(_PUBLISHED_FILE.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _save_published(state: dict) -> None:
+    try:
+        _PUBLISHED_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _PUBLISHED_FILE.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    except OSError as exc:  # 状态写不进去不致命，最多下次再发一遍
+        logger.warning(f"[wanwan] 发布状态写入失败: {exc}")
 
 
 def _diary_path(date_str: str, base: Path | None = None) -> Path:
@@ -136,6 +160,13 @@ async def _do_publish(
     image_url: str = "",
 ) -> str:
     """发布核心：读当天日记 → 交给站点。参数名必须与 site.publish_note 对齐。"""
+    # TEMP-TRACE：抓「非今天的日期被反复发布」的调用来源（排查完移除）
+    if date_str != _today():
+        logger.warning(
+            f"[wanwan] TEMP-TRACE diary_publish 异常日期 {date_str}"
+            f"（今天 {_today()}）调用栈:\n" + "".join(traceback.format_stack()[:-1])
+        )
+
     path = _diary_path(date_str)
     if not path.exists():
         return f"⚠️ {date_str} 没有日记，先写再发"
@@ -143,6 +174,15 @@ async def _do_publish(
     content = path.read_text(encoding="utf-8").strip()
     if not content:
         return f"⚠️ {date_str} 日记为空"
+
+    # 同一天 + 同内容只发一次：站点按 title 派生 slug，重复 POST 会堆出
+    # 2026-11-06-2/-3… 一堆重复帖（2026-11-07 就被发过两次）
+    sha = _content_sha(content)
+    state = _load_published()
+    prev = state.get(date_str)
+    if isinstance(prev, dict) and prev.get("sha") == sha:
+        logger.info(f"[wanwan] 日记 {date_str} 已发布过，跳过重复发布")
+        return f"✅ 这篇已经发布过了，没有重复发：\n{prev.get('result', '')}"
 
     # 站点按 title 派生 slug 且剥掉非 ASCII，所以 title 必须带英文前缀，
     # 否则 URL 只剩日期（如 /blog/posts/2026-11-07/）
@@ -153,6 +193,8 @@ async def _do_publish(
     except site.SiteError as exc:
         return f"⚠️ 发布失败：{exc}"
 
+    state[date_str] = {"sha": sha, "result": result, "at": datetime.now().isoformat(timespec="seconds")}
+    _save_published(state)
     logger.info(f"[wanwan] 日记发布 {date_str}")
     return f"✅ {result}"
 

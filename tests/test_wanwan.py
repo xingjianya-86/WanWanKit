@@ -244,6 +244,7 @@ class TestDiaryPublish:
             return "已发布：《测试》"
 
         monkeypatch.setattr(diary.site, "publish_note", fake_publish)
+        monkeypatch.setattr(diary, "_PUBLISHED_FILE", tmp_path / ".published.json")
         diary.write_entry("正文", "2026-11-06", base=tmp_path)
 
         # 绕过 _DIARY_DIR：do_publish 用默认目录，这里直接换 diary 路径
@@ -254,6 +255,34 @@ class TestDiaryPublish:
         assert captured["image"] == "http://x/y.jpg"
         # title 必须含英文，否则站点派生的 URL 只剩日期（非 ASCII 被剥）
         assert captured["title"] == "Diary 2026-11-06 晚晚的日记"
+
+    def test_do_publish_skips_duplicate(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """同一天 + 同内容只发一次（曾把同一篇日记发成 2026-11-06-2/-3… 一堆重复帖）。"""
+        import asyncio
+
+        calls: list[str] = []
+
+        async def fake_publish(cfg: object, title: str, content_md: str, *, topic: str = "", image: str = "") -> str:
+            calls.append(title)
+            return f"已发布：《{title}》\n链接：https://x/1"
+
+        monkeypatch.setattr(diary.site, "publish_note", fake_publish)
+        monkeypatch.setattr(diary, "_PUBLISHED_FILE", tmp_path / ".published.json")
+        monkeypatch.setattr(diary, "_DIARY_DIR", tmp_path)
+        diary.write_entry("同样的正文", "2026-11-06", base=tmp_path)
+
+        first = asyncio.run(diary._do_publish(object(), "2026-11-06"))
+        second = asyncio.run(diary._do_publish(object(), "2026-11-06"))
+
+        assert "已发布" in first
+        assert "没有重复发" in second
+        assert len(calls) == 1, "第二次不该再打站点"
+
+        # 正文改了（真编辑）应当允许重发
+        diary.write_entry("改过的正文", "2026-11-06", base=tmp_path)
+        third = asyncio.run(diary._do_publish(object(), "2026-11-06"))
+        assert "已发布" in third
+        assert len(calls) == 2
 
     def test_do_publish_missing_diary(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         import asyncio

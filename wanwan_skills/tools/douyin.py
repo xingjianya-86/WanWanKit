@@ -280,12 +280,12 @@ async def douyin_comment(
             if not await phone.type_text(serial, clean):
                 return "⚠️ 输入未生效（AdbKeyboard 可能没激活）"
 
-            await asyncio.sleep(random.uniform(0.6, 1.2))
-            send = await _find_send_btn(serial)
+            # 等表情面板/键盘动画走完：动画中截屏会拿到中间态位置，随后点必点空
+            await asyncio.sleep(random.uniform(1.6, 2.4))
+            send = await _locate_send_stable(serial)
             if send is None:
-                # 一次重试：等面板动画走完再截屏找（不点 box——键盘已开，dump 坐标不可信）
                 await asyncio.sleep(random.uniform(0.8, 1.2))
-                send = await _find_send_btn(serial)
+                send = await _locate_send_stable(serial)
             if send is None:
                 await _abort_panel(serial)
                 nodes = await phone.ui(serial)
@@ -295,11 +295,12 @@ async def douyin_comment(
             await phone.tap(serial, *send)
             await asyncio.sleep(random.uniform(1.2, 1.8))
 
-            # 验证：发送成功会清空输入框；没清空说明点击没生效，再点一次
-            if await _text_still_there(serial, clean):
-                await phone.tap(serial, *send)
+            # 验证：发送成功会清空输入框；没清空就**重新定位**（按钮可能又漂了）再点一次
+            if not await _input_cleared(serial, clean):
+                fresh = await _locate_send_stable(serial, tries=2)
+                await phone.tap(serial, *(fresh or send))
                 await asyncio.sleep(random.uniform(1.2, 1.8))
-            if await _text_still_there(serial, clean):
+            if not await _input_cleared(serial, clean):
                 await _abort_panel(serial)
                 logger.warning("[wanwan] 发送按钮点击两次仍无效，已放弃")
                 return "⚠️ 点击发送无效，评论未发出（文字仍在输入框）"
@@ -320,14 +321,40 @@ async def douyin_comment(
     return f"✅ 评论已发送：{clean}"
 
 
-async def _text_still_there(serial: str, text: str) -> bool:
-    """输入框里是否还留着这段文字（发送成功会被清空）。
+async def _input_cleared(serial: str, text: str) -> bool:
+    """输入框是否已清空（发送成功的唯一标志）。
 
-    只认 dump 底部输入条区域（y>=2170）：评论列表里的同文节点是发出去之后
-    才出现的，位置更高（y<=2160），不排除会把「发成功」误判成「没发出」。
+    关键：dump 失败时 ui() 会**静默返回空列表**，那不是「清空了」——
+    必须重试；耗尽仍拿不到控件树就保守当作「没清空」，
+    宁可多点一次也绝不能假报「已发送」（10:28 就是这么误判的）。
+    只认底部输入条区域（y>=2170）：评论列表里的同文节点位置更高（y<=2160）。
     """
-    nodes = await phone.ui(serial)
-    return any(text[:6] in n.text and n.y1 >= 2170 for n in nodes)
+    for i in range(3):
+        nodes = await phone.ui(serial)
+        if nodes:
+            return not any(text[:6] in n.text and n.y1 >= 2170 for n in nodes)
+        await asyncio.sleep(0.6 + i * 0.5)
+    logger.warning("[wanwan] uiautomator dump 连续失败，按「未清空」保守处理")
+    return False
+
+
+async def _locate_send_stable(serial: str, tries: int = 4) -> tuple[int, int] | None:
+    """定位发送按钮，要求**连续两次结果一致**才返回。
+
+    表情面板展开动画中按钮位置会漂移，截到中间态随后点击必落空
+    （10:28 实测：动画中截屏点空、静止后同一坐标一点就中）。
+    """
+    prev: tuple[int, int] | None = None
+    for _ in range(tries):
+        pt = await _find_send_btn(serial)
+        if pt is None:
+            await asyncio.sleep(0.5)
+            continue
+        if pt == prev:
+            return pt
+        prev = pt
+        await asyncio.sleep(0.45)
+    return prev
 
 
 async def _abort_panel(serial: str) -> None:
@@ -453,10 +480,10 @@ async def _find_comment_input(serial: str) -> object | None:
 async def _find_send_btn(serial: str) -> tuple[int, int] | None:
     """找「发送」按钮的**真实像素坐标**。
 
-    键盘/表情面板打开后 dump 坐标不可信（报 y=2208、真实 y≈1245），按 dump 点必点空，
-    所以优先截屏找抖音红 (#FE2C55) 实心按钮；截屏找不到时才退回 dump
-    （此时要求面板开着、且取包含「发送」文字的**面积最小**可点节点——
-    抖音把文字放在不可点 TextView 上、bounds 还可能只有 2px 高，直接点会偏）。
+    键盘/表情面板打开后 dump 坐标不可信（残留节点报 y=2208、真实 y≈1245），
+    所以优先截屏找抖音红 (#FE2C55) 实心按钮；截屏失败才退回 dump——
+    dump 里同一按钮有两份，取 bounds 最高（未被裁剪）的那份，
+    再回溯面积最小的可点父节点（直接用文字节点会因 2px 残缺 bounds 点偏）。
     """
     try:
         blob = vision.find_color_button(await phone.capture(serial), (254, 44, 85))
@@ -466,14 +493,16 @@ async def _find_send_btn(serial: str) -> tuple[int, int] | None:
         return blob.center
 
     nodes = await phone.ui(serial)
-    for n in nodes:
-        t = (n.text or n.desc).strip()
-        if n.y1 <= 2100 or not ("发送" in t or "发布" in t):
-            continue
-        # 回溯包含它的可点父节点，取面积最小的（直接返回会命中根布局 (0,0)-(1080,2210)）
-        parents = [p for p in nodes if p.clickable and p.x1 <= n.x1 and p.y1 <= n.y1 and p.x2 >= n.x2 and p.y2 >= n.y2]
-        if parents:
-            picked = min(parents, key=lambda p: (p.x2 - p.x1) * (p.y2 - p.y1))
-            return picked.center
-        return n.center
-    return None
+    # 只认整词「发送/发布」——「同时发布为作品」「去发布作品」是别的控件，点错会切开关
+    cands = [n for n in nodes if (n.text or n.desc).strip() in ("发送", "发布")]
+    if not cands:
+        return None
+    # 同一按钮会被 dump 报两份：真实位置（完整 bounds）+ 被裁剪的残留（仅 2px 高），
+    # 按残留那份点必点空，取 bounds 最高（未被裁剪）的
+    n = max(cands, key=lambda c: c.y2 - c.y1)
+    # 回溯包含它的可点父节点，取面积最小的（直接返回会命中根布局 (0,0)-(1080,2210)）
+    parents = [p for p in nodes if p.clickable and p.x1 <= n.x1 and p.y1 <= n.y1 and p.x2 >= n.x2 and p.y2 >= n.y2]
+    if parents:
+        picked = min(parents, key=lambda p: (p.x2 - p.x1) * (p.y2 - p.y1))
+        return picked.center
+    return n.center
