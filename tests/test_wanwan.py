@@ -520,3 +520,25 @@ class TestTaskPrompt:
         assert "不要传 date" in out
         assert "image_url 必须传" in out
         assert "能力缺失叙述" in out
+
+
+class TestHeartbeat:
+    """心跳看门狗：误报会狼来了，漏报会失联不自知。"""
+
+    def test_connect_ok_parsing(self) -> None:
+        from wanwan_skills.tasks import _connect_ok
+
+        assert _connect_ok("connected to 10.110.0.161:5555\n")
+        assert _connect_ok("already connected to 10.110.0.161:5555\n")
+        assert not _connect_ok("failed to connect to '10.110.0.161:5555': No route to host\n")
+        assert not _connect_ok("")
+
+    def test_alert_cooldown(self) -> None:
+        from wanwan_skills.tasks import _ALERT_COOLDOWN, _should_alert
+
+        # 首次断线：立即报
+        assert _should_alert(now=1000.0, last_alert=0.0, down=False)
+        # 持续断线但冷却未到：闭嘴（否则刷屏）
+        assert not _should_alert(now=1060.0, last_alert=1000.0, down=True)
+        # 冷却过了：复报（长期失联要持续提醒）
+        assert _should_alert(now=1000.0 + _ALERT_COOLDOWN + 1, last_alert=1000.0, down=True)

@@ -1,4 +1,7 @@
-"""每日日记定时任务：每天 18:00 用晚晚人格写日记并发布到 sua17.cn。
+"""定时任务：每日日记 + 手机心跳看门狗。
+
+日记：每天18:00 用晚晚人格写日记并发布到 sua17.cn。
+心跳：每5 分钟探测手机 adb 通道，断线 QQ 告警（30 分钟冷却）、恢复也报。
 
 链路：cron → 载入晚晚人格 → 独立 session 跑一轮（读当天历史 →
 diary_write → diary_publish）→ emit_proactive_message 播报给主人。
@@ -9,6 +12,8 @@ diary_write → diary_publish）→ emit_proactive_message 播报给主人。
 
 from __future__ import annotations
 
+import asyncio
+import time
 import uuid
 from datetime import datetime
 
@@ -172,3 +177,117 @@ def register_diary_task() -> None:
         name="晚晚每日日记",
     )
     logger.info(f"[wanwan] 每日日记任务已注册：每天 {CRON_HOUR:02d}:{CRON_MINUTE:02d}")
+
+
+# ---------- 手机心跳看门狗 ----------
+
+HEARTBEAT_ID = "wanwan_phone_heartbeat"
+HEARTBEAT_MINUTES = 5
+_ALERT_COOLDOWN = 1800.0  # 断线告警30 分钟冷却，避免刷屏
+
+_alert_state: dict = {"down": False, "last_alert": 0.0}
+
+
+def _connect_ok(output: str) -> bool:
+    """adb connect 输出判定：connected / already connected 才算通。"""
+    return "connected" in output and "failed" not in output
+
+
+def _should_alert(now: float, last_alert: float, down: bool) -> bool:
+    """是否该发断线告警：首次断线必报；持续断线满冷却才复报。"""
+    return (not down) or (now - last_alert >= _ALERT_COOLDOWN)
+
+
+async def probe_phone(serial: str) -> bool:
+    """adb connect + shell true：能真正执行一条命令才算手机在线。"""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "adb",
+            "connect",
+            serial,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
+        if not _connect_ok(out.decode("utf-8", "replace")):
+            return False
+        proc = await asyncio.create_subprocess_exec(
+            "adb",
+            "-s",
+            serial,
+            "shell",
+            "true",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        await asyncio.wait_for(proc.communicate(), timeout=12)
+        return proc.returncode == 0
+    except Exception:  # noqa: BLE001 —— 看门狗任何异常都按「不通」处理
+        return False
+
+
+async def _notify_heartbeat(cfg: WanwanConfig, message: str) -> None:
+    """把心跳结果播报给主人（发失败只记日志，不影响调度器）。"""
+    from gsuid_core.ai_core.proactive import emit_proactive_message
+
+    try:
+        sent = await emit_proactive_message(
+            event=_build_event(cfg),
+            message=message,
+            source="scheduled_task",
+            trigger_reason=HEARTBEAT_ID,
+            suppress_when_heartbeat_recent=False,
+        )
+        logger.info(f"[wanwan] 心跳通知{'已发' if sent else '被抑制'}：{message[:40]}")
+    except Exception as exc:  # noqa: BLE001 —— 告警发不出不能炸掉 job
+        logger.warning(f"[wanwan] 心跳通知发送失败: {exc}")
+
+
+async def run_phone_heartbeat() -> None:
+    """手机心跳：每5 分钟测一次；断了告警（30 分钟冷却），恢复也报一声。"""
+    cfg = load_config()
+    if cfg is None or not cfg.phone_ready:
+        return
+    serial = cfg.phone_serial
+
+    ok = await probe_phone(serial)
+    if not ok:
+        # 网络抖动缓冲：隔20s 各再试一次，别把抖动当掉线（狼来了）
+        for _ in range(2):
+            await asyncio.sleep(20)
+            if await probe_phone(serial):
+                ok = True
+                break
+
+    now = time.time()
+    if ok:
+        if _alert_state["down"]:
+            _alert_state.update(down=False, last_alert=0.0)
+            await _notify_heartbeat(cfg, "✅ 手机心跳恢复：10.110.0.161 已通，adb 正常。")
+        return
+
+    if _should_alert(now, float(_alert_state["last_alert"]), bool(_alert_state["down"])):
+        _alert_state.update(down=True, last_alert=now)
+        await _notify_heartbeat(
+            cfg,
+            "⚠️ 手机心跳断了：adb 连不上 10.110.0.161（ZeroTier 大概率被 MIUI 省电杀了）。"
+            "去手机把 ZeroTier 打开，并把它的省电策略设成「无限制」、允许自启动。",
+        )
+
+
+@on_core_start
+def register_phone_heartbeat() -> None:
+    """启动时注册手机心跳看门狗（幂等，重启不叠加）。"""
+    cfg = load_config()
+    serial = cfg.phone_serial if cfg is not None and cfg.phone_ready else "手机"
+    scheduler.add_job(
+        func=run_phone_heartbeat,
+        trigger="interval",
+        minutes=HEARTBEAT_MINUTES,
+        id=HEARTBEAT_ID,
+        replace_existing=True,
+        name="手机心跳看门狗",
+        max_instances=1,
+        coalesce=True,
+    )
+    logger.info(f"[wanwan] 手机心跳已注册：每 {HEARTBEAT_MINUTES} 分钟探测 {serial}")
