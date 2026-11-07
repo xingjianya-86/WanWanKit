@@ -420,9 +420,20 @@ async def douyin_reply(
             if "回复" not in (box.text or ""):
                 logger.warning(f"[wanwan] 回复前缀没出现在输入框（{(box.text or '')[:30]}），可能以普通评论发出")
 
-            # clear=False：只追加正文，保留下「回复 @作者」归属前缀
-            if not await phone.type_text(serial, clean, clear=False):
-                return "⚠️ 输入未生效（AdbKeyboard 可能没激活）"
+            # 预检复用：上次失败可能已把本次正文（连带前缀）留在框里——
+            # 直接复用绝不再播（否则 clear=False 会叠加成两份）；
+            # 若是换文案留下的旧残留，清掉并重点「回复」拿回前缀。
+            existing = (await phone.input_text(serial)).strip()
+            if clean[:6] in existing:
+                logger.info("[wanwan] 输入框已有本次正文（上次尝试残留），跳过输入")
+            else:
+                if existing and not existing.startswith("回复"):
+                    await phone.clear_input(serial)
+                    await phone.tap(serial, *reply_btn.center)
+                    await asyncio.sleep(2.5)
+                # clear=False：只追加正文，保留下「回复 @作者」归属前缀
+                if not await phone.type_text(serial, clean, clear=False):
+                    return "⚠️ 输入未生效（AdbKeyboard 可能没激活）"
 
             # 正文上屏后按钮才变红——等动画再连续两次稳定定位
             await asyncio.sleep(random.uniform(1.6, 2.4))

@@ -56,18 +56,19 @@ class UINode:
 def is_input_node(n: UINode) -> bool:
     """dump 里的「输入框文字」节点。
 
-    位置随 App/键盘状态变：抖音键盘开 y≈934、B站展开 y≈1992、
-    底部条 y≥2170——按固定 y 过滤会漏判，漏判会让 type_text 重播
-    （文字翻倍）、_input_cleared 误判。共同形态是**贴左缘的宽框**
-    （x1≤60 且宽≥900）加两个纵向带；评论列表从 x1≈120 起被排除，
-    视频简介在 y≈1550 不在带内（模型爱照抄简介，误判会把发成功的
-    评论当成还留在输入框）。
+    按**形态**认，不按 y 带认——y 带被真机打过脸：B站回复框底部锚定、
+    文字一多就向上撑（实测顶边 1891，比预设带低 9px，漏判导致重播 7 份）。
+    三重覆盖：
+    - 底部条区域 y≥2170（含 dump 残留副本）
+    - cls == EditText（多行输入框撑到哪都算；视频简介/标题是 TextView 排除）
+    - 贴左缘宽框且 y<1150（抖音键盘开时的输入框，兜 cls 异常）
+    评论列表从 x1≈120 起、视频简介是 TextView，都被排除。
     """
     if n.y1 >= 2170:
         return True
-    if not (n.x1 <= 60 and (n.x2 - n.x1) >= 900):
-        return False
-    return n.y1 < 1150 or 1900 <= n.y1 <= 2150
+    if n.cls == "EditText":
+        return True
+    return n.x1 <= 60 and (n.x2 - n.x1) >= 900 and n.y1 < 1150
 
 
 async def screen_size(serial: str) -> tuple[int, int]:
@@ -194,11 +195,61 @@ def _parse_ui(xml_text: str) -> list[UINode]:
     return nodes
 
 
+def _text_on_screen(nodes: list, text: str) -> bool:
+    """字上屏了吗：先按输入框形态认；认不出但字已在屏上任何地方也算。
+
+    第二层宽松判定是防**重播翻倍**的最后防线：形态漏判一次已经够了，
+    绝不能因此再播一遍（真机回复场景因此播过 7 份）。
+    """
+    if any(text[:6] in n.text and is_input_node(n) for n in nodes):
+        return True
+    if any(text[:6] in n.text for n in nodes):
+        logger.info("[wanwan] type_text: 宽松判定命中（输入框形态未识别），不重播")
+        return True
+    return False
+
+
+def _looks_like_hint(text: str) -> bool:
+    """是占位提示语而不是真内容（B站「评论千万条…」、抖音「有爱评论…」等）。
+
+    input_text 把 hint 当内容会让 clear_input 对着提示语空转、
+    让回复预检误判「有残留」。
+    """
+    t = text.strip()
+    if len(t) > 20:
+        return False
+    return any(m in t for m in ("评论千万条", "说点什么", "有爱评论", "善语", "爱评论的人", "留言"))
+
+
+async def input_text(serial: str) -> str:
+    """读输入框**真实内容**（排除占位提示语；dump 失败返回空）。"""
+    nodes = await ui(serial)
+    cands = [n.text for n in nodes if n.cls == "EditText" and n.text and not _looks_like_hint(n.text)]
+    if not cands:
+        cands = [n.text for n in nodes if is_input_node(n) and n.text and not _looks_like_hint(n.text)]
+    return max(cands, key=len) if cands else ""
+
+
+async def clear_input(serial: str, rounds: int = 5) -> bool:
+    """清空输入框：读现有长度 → 批量 DEL（keyevent 67=退格），多轮直到读空。
+
+    光标须在文末（B站/抖音聚焦时默认如此）；单轮上限 80 键，多轮覆盖长残留。
+    """
+    for _ in range(rounds):
+        existing = await input_text(serial)
+        if not existing:
+            return True
+        dels = ["67"] * min(len(existing) + 3, 80)
+        await adb.shell(serial, "input", "keyevent", *dels, timeout=30)
+        await _async_sleep(0.8)
+    return not await input_text(serial)
+
+
 async def type_text(serial: str, text: str, *, clear: bool = True) -> bool:
     """用 AdbKeyboard 输入中文。返回是否在界面上看到输入结果。
 
-    clear=True（默认）：先读输入框现有长度、批量 DEL 清空
-    （ADB_INPUT_CLEAR_TEXT 在抖音上不生效，不清会把新旧文字拼在一起），再广播正文。
+    clear=True（默认）：先清空输入框再广播正文
+    （ADB_INPUT_CLEAR_TEXT 在抖音上不生效，不清会把新旧文字拼在一起）。
     clear=False（回复场景）：输入框已预填「回复 @xxx」归属前缀，
     **只能追加不能清**——清掉归属，回复就变成普通评论了。
     """
@@ -208,13 +259,7 @@ async def type_text(serial: str, text: str, *, clear: bool = True) -> bool:
     await adb.shell(serial, "ime", "set", ADB_IME, timeout=20)
 
     if clear:
-        # 批量删掉残留：keyevent 67=DEL，一次可带多个
-        nodes = await ui(serial)
-        existing = max((len(n.text) for n in nodes if is_input_node(n) and n.text), default=0)
-        if existing:
-            dels = ["67"] * min(existing + 3, 60)
-            await adb.shell(serial, "input", "keyevent", *dels, timeout=25)
-            await _async_sleep(0.8)
+        await clear_input(serial)
 
     for _ in range(3):
         await adb.shell(
@@ -230,20 +275,19 @@ async def type_text(serial: str, text: str, *, clear: bool = True) -> bool:
         )
         await _async_sleep(1.2)
         nodes = await ui(serial)
-        # 输入框位置会变（键盘开 y≈934 / 关着 y≥2170），用 is_input_node 认
-        if any(text[:6] in n.text and is_input_node(n) for n in nodes):
+        if _text_on_screen(nodes, text):
             return True
         if not nodes:
             # dump 瞬时空 ≠ 没上屏：绝不能因此重播——重播会把同一段文字
             # 播两遍拼进输入框（真机复现过）。等一下重读，读不到就报失败。
             await _async_sleep(1.0)
             nodes = await ui(serial)
-            if any(text[:6] in n.text and is_input_node(n) for n in nodes):
+            if _text_on_screen(nodes, text):
                 return True
             if not nodes:
                 logger.warning("[wanwan] type_text: dump 连续读不到，放弃重播（避免文字翻倍）")
                 return False
-        # dump 正常但确实没上屏 → 真没播进去，才允许重播
+        # dump 正常且屏上哪儿都没见字 → 真没播进去，才允许重播
     return False
 
 

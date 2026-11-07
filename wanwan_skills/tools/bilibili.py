@@ -141,10 +141,16 @@ def _find_comment_entry(nodes: list):
 
 
 def _sheet_open(nodes: list) -> bool:
-    """评论面板是否打开（标题「评论（NNN）」或输入框占位符）。"""
+    """评论面板是否打开（标题/标签「评论（NNN）」或「评论 (NNN)」或占位符）。
+
+    标题格式实测两种：全角「评论（3270）」和半角+空格「评论 (17)」——
+    只认全角会漏判（16:07 实测）。入口 rail 的裸「评论」无括号，不算。
+    """
     for n in nodes:
         t = _label(n)
-        if t.startswith("评论（") or "评论千万条" in t:
+        if "评论千万条" in t:
+            return True
+        if t.startswith("评论") and ("（" in t or "(" in t):
             return True
     return False
 
@@ -562,9 +568,20 @@ async def bilibili_reply(
             if "回复" not in _label(box):
                 logger.warning(f"[wanwan] 回复前缀没出现在输入框（{_label(box)[:30]}），可能以普通评论发出")
 
-            # clear=False：只追加正文，保留下「回复 作者 :」归属前缀
-            if not await phone.type_text(serial, clean, clear=False):
-                return "⚠️ 输入未生效（AdbKeyboard 可能没激活）"
+            # 预检复用：上次失败可能已把本次正文（连带前缀）留在框里——
+            # 直接复用绝不再播（否则 clear=False 会叠加成两份）；
+            # 若是换文案留下的旧残留，清掉并重点「回复」拿回前缀。
+            existing = (await phone.input_text(serial)).strip()
+            if clean[:6] in existing:
+                logger.info("[wanwan] 输入框已有本次正文（上次尝试残留），跳过输入")
+            else:
+                if existing and not existing.startswith("回复"):
+                    await phone.clear_input(serial)
+                    await phone.tap(serial, *reply_btn.center)
+                    await asyncio.sleep(2.5)
+                # clear=False：只追加正文，保留下「回复 作者 :」归属前缀
+                if not await phone.type_text(serial, clean, clear=False):
+                    return "⚠️ 输入未生效（AdbKeyboard 可能没激活）"
 
             # 正文上屏后按钮才变粉——此刻再定位
             await asyncio.sleep(random.uniform(1.2, 1.8))

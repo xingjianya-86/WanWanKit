@@ -371,26 +371,51 @@ class TestPhone:
             assert bad not in _ACTIONS
 
     def test_is_input_node_tracks_moving_input_box(self) -> None:
-        """输入框位置随键盘状态变，固定 y 过滤会漏判（曾致 type_text 文字翻倍）。"""
+        """输入框位置/尺寸随键盘与内容变，按形态认而不是按 y 带认。"""
         from wanwan_skills.core.phone import UINode, is_input_node
 
-        def node(x1: int, y1: int, x2: int, y2: int) -> UINode:
-            return UINode(text="", desc="", cls="T", clickable=False, x1=x1, y1=y1, x2=x2, y2=y2)
+        def node(x1: int, y1: int, x2: int, y2: int, cls: str = "T") -> UINode:
+            return UINode(text="", desc="", cls=cls, clickable=False, x1=x1, y1=y1, x2=x2, y2=y2)
 
-        # 键盘/表情面板打开：输入框是 y≈934 的贴左宽框
+        # 键盘/表情面板打开：y≈934 的贴左宽框（cls 也可能是 EditText）
         assert is_input_node(node(30, 934, 1045, 1060))
-        # 关着：底部输入条
+        # 关着：底部输入条 / dump 的 2px 残留副本（y≥2170 兜住）
         assert is_input_node(node(55, 2205, 590, 2210))
-        # dump 里的 2px 残留副本（在底部条区域）
         assert is_input_node(node(953, 2208, 1017, 2210))
-        # B站没有可见键盘，展开输入区在 y≈1992
-        assert is_input_node(node(30, 1992, 1010, 2133))
-        # 评论列表节点从 x1≈120 起，不算输入框
+        # B站无可见键盘的展开输入区（EditText 形态判定）
+        assert is_input_node(node(30, 1992, 1010, 2133, cls="EditText"))
+        # 真机雷：回复多行框被文字撑到 y1654——旧 y 带 [1900,2150] 差 9px 漏判，
+        # 导致 type_text 重播出 7 份。EditText 形态判定必须认
+        assert is_input_node(node(30, 1654, 1010, 2032, cls="EditText"))
+        # 评论列表从 x1≈120 起，不算输入框
         assert not is_input_node(node(150, 700, 1040, 850))
-        # B站评论列表 x1≈140
         assert not is_input_node(node(140, 1889, 1050, 2009))
-        # 视频简介在 y≈1550（模型爱照抄简介，误判会把发成功的评论当成没发）
+        # 视频简介是 TextView 且在 y≈1550（模型爱照抄简介，误判会把发成功的评论当成没发）
         assert not is_input_node(node(30, 1550, 950, 1750))
+
+    def test_text_on_screen_prefers_input_then_loose(self) -> None:
+        """宽松判定是防重播翻倍的最后防线：字在屏上任何地方都不再播。"""
+        from wanwan_skills.core.phone import UINode, _text_on_screen
+
+        def node(text: str, x1: int, y1: int, cls: str = "T") -> UINode:
+            return UINode(text=text, desc="", cls=cls, clickable=False, x1=x1, y1=y1, x2=x1 + 900, y2=y1 + 100)
+
+        text = "鲨鲨潜水翻了翻"
+        # 严格：输入框形态命中
+        assert _text_on_screen([node(text, 30, 1654, cls="EditText")], text)
+        # 宽松：形态没认出但字在屏上 → 算上屏（不许重播）
+        assert _text_on_screen([node(text, 140, 500)], text)
+        # 屏上没字 → False（才允许重播）
+        assert not _text_on_screen([node("别的内容", 30, 1654, cls="EditText")], text)
+
+    def test_hint_text_recognized(self) -> None:
+        """占位提示语不是内容：误认会让 clear_input 空转、回复预检误判有残留。"""
+        from wanwan_skills.core.phone import _looks_like_hint
+
+        assert _looks_like_hint("评论千万条，等你发一条")
+        assert _looks_like_hint("有爱评论，说点儿好听的")
+        assert not _looks_like_hint("鲨鲨潜水翻了翻，还是这条最在理……别的回复都太吵了")
+        assert not _looks_like_hint("真好看")  # 短内容但不是提示语
 
 
 class TestBilibiliCards:
@@ -443,8 +468,12 @@ class TestBilibiliCards:
         assert not _on_video_page([node("推荐,7之2,标签", x1=140, y1=200)])
         # 评论面板：标题或输入框占位符
         assert _sheet_open([node("评论（3270）", x1=170, y1=854)])
+        # 半角+空格的标签格式（16:07 真机实测「评论 (17)」，只认全角会漏）
+        assert _sheet_open([node("评论 (17)", x1=170, y1=854)])
         assert _sheet_open([node("评论千万条，等你发一条", x1=30, y1=2207, cls="EditText")])
         assert not _sheet_open([node("点赞", x1=939, y1=1247)])
+        # 裸「评论」是右侧入口，不是面板
+        assert not _sheet_open([node("评论", x1=939, y1=1444)])
         # 输入框定位
         box = node("评论千万条，等你发一条", x1=30, y1=2207, cls="EditText")
         assert _find_input([box]) is box
