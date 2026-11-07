@@ -108,6 +108,12 @@ def _parse_card(desc: str) -> _Card | None:
     )
 
 
+def _label(n) -> str:
+    """节点文案：抖音/B站都可能把关键文案放在 desc 而非 text（实测B站评论入口
+    就是 text='' desc='评论'），只看 text 会漏。"""
+    return (n.text or n.desc or "").strip()
+
+
 def _has_video_card(nodes: list) -> bool:
     return any(n.clickable and (n.desc or "").startswith(_VIDEO_PREFIX) for n in nodes)
 
@@ -117,7 +123,7 @@ def _on_video_page(nodes: list) -> bool:
     for n in nodes:
         if not n.clickable:
             continue
-        t = (n.text or "").strip()
+        t = _label(n)
         if n.x1 > 900 and t in ("点赞", "投币", "收藏", "评论"):
             return True
         if n.x1 < 150 and n.y1 < 250 and t == "返回":
@@ -125,10 +131,19 @@ def _on_video_page(nodes: list) -> bool:
     return False
 
 
+def _find_comment_entry(nodes: list):
+    """视频页右侧「评论」入口。
+
+    文案可能在 desc 不在 text；位置随视频页布局浮动（实测 y1 在1417/1444
+    变化），所以只约束右半屏 x1>900，不写死坐标。
+    """
+    return next((n for n in nodes if n.clickable and _label(n) == "评论" and n.x1 > 900), None)
+
+
 def _sheet_open(nodes: list) -> bool:
     """评论面板是否打开（标题「评论（NNN）」或输入框占位符）。"""
     for n in nodes:
-        t = (n.text or "").strip()
+        t = _label(n)
         if t.startswith("评论（") or "评论千万条" in t:
             return True
     return False
@@ -137,7 +152,7 @@ def _sheet_open(nodes: list) -> bool:
 def _find_input(nodes: list):
     """评论输入框：优先占位符，退回底部 EditText（y>1500，避免误点搜索框）。"""
     for n in nodes:
-        if "评论千万条" in (n.text or ""):
+        if "评论千万条" in _label(n):
             return n
     for n in nodes:
         if n.cls == "EditText" and n.y1 > 1500:
@@ -145,8 +160,29 @@ def _find_input(nodes: list):
     return None
 
 
+async def _skip_splash(serial: str) -> None:
+    """冷启动开屏广告（约5s、非每次都有）：见到「跳过」就点，没广告就秒过。
+
+    最多轮询 ~15s；feed/视频页出现即返回，交还给 _goto_feed。
+    """
+    for _ in range(6):
+        try:
+            nodes = await phone.ui(serial)
+        except adb.AdbError:
+            nodes = []
+        if nodes and (_has_video_card(nodes) or _on_video_page(nodes)):
+            return
+        for n in nodes:
+            if "跳过" in (n.text or "") + (n.desc or ""):
+                await phone.tap(serial, *n.center)
+                logger.info(f"[wanwan] B站开屏广告已跳过 @({n.center[0]},{n.center[1]})")
+                await asyncio.sleep(2.0)
+                return
+        await asyncio.sleep(1.5)
+
+
 async def _ensure_bilibili(serial: str) -> None:
-    """唤醒解锁 + 确保 B 站在前台。"""
+    """唤醒解锁 + 确保 B 站在前台（冷启动时先过开屏广告）。"""
     awake, locked, app = await phone.screen_state(serial)
     if not awake or locked:
         res = await phone.unlock(serial)
@@ -155,8 +191,10 @@ async def _ensure_bilibili(serial: str) -> None:
         await asyncio.sleep(1.0)
         _, locked, app = await phone.screen_state(serial)
     if app != BILI_PKG:
-        await phone.launch(serial, BILI_PKG)
-        await asyncio.sleep(8)
+        await phone.launch(serial, BILI_PKG)  # 内部已等4s让广告渲染
+        await _skip_splash(serial)
+        return
+    # 热启动在前台：不动面板（评论可能正开着），浏览方自己 _goto_feed
 
 
 async def _goto_feed(serial: str, deadline: float | None = None) -> bool:
@@ -382,10 +420,7 @@ async def bilibili_comment(
             if not _sheet_open(nodes):
                 opened = False
                 for _ in range(3):
-                    entry = next(
-                        (n for n in nodes if n.clickable and (n.text or "").strip() == "评论" and n.x1 > 900),
-                        None,
-                    )
+                    entry = _find_comment_entry(nodes)
                     if entry is None:
                         break
                     await phone.tap(serial, *entry.center)

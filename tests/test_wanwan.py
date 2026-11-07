@@ -450,6 +450,22 @@ class TestBilibiliCards:
         assert _find_input([box]) is box
         assert _find_input([node("搜索", x1=178, y1=102, cls="EditText")]) is None
 
+    def test_comment_entry_via_desc(self) -> None:
+        """实测B站评论入口 text='' 文案在 desc——只查 text 会漏（14:37 雷）。"""
+        from wanwan_skills.core.phone import UINode
+        from wanwan_skills.tools.bilibili import _find_comment_entry, _on_video_page, _sheet_open
+
+        rail = UINode(text="", desc="评论", cls="ViewGroup", clickable=True, x1=939, y1=1444, x2=1079, y2=1589)
+        assert _find_comment_entry([rail]) is rail
+        assert _on_video_page([rail])
+        # 面板标题不能被当成入口（左侧 x<900 + 文案带全角括号）
+        title = UINode(text="评论（3270）", desc="", cls="TextView", clickable=True, x1=170, y1=854, x2=439, y2=969)
+        assert _find_comment_entry([title]) is None
+        assert _sheet_open([title])
+        # 不可点/左半屏的「评论」不算入口
+        left = UINode(text="评论", desc="", cls="TextView", clickable=False, x1=100, y1=900, x2=400, y2=960)
+        assert _find_comment_entry([left]) is None
+
 
 class TestDouyinJunk:
     """直播 / 广告卡片必须被识别跳过。"""
