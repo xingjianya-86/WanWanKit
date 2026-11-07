@@ -121,8 +121,13 @@ async def generate_image(
     size: str = "1K",
     watermark: bool = False,
     ref_images: list[str] | None = None,
+    max_bytes: int | None = None,
 ) -> bytes:
-    """文生图（可带参考图），返回压缩后的 JPEG 字节。"""
+    """文生图（可带参考图），返回压缩后的 JPEG 字节。
+
+    max_bytes 覆盖 cfg.ark_max_bytes：聊天发图默认压得狠（150KB），
+    视频帧等场景可放宽（如 500KB）保画质。
+    """
     clean = prompt.strip()
     if not clean:
         raise ArkError("prompt 不能为空")
@@ -154,7 +159,7 @@ async def generate_image(
             raise ArkError("方舟响应缺少图片 URL 与 base64")
         raw = base64.b64decode(b64)
 
-    return _compress_jpeg(raw, cfg.ark_max_bytes)
+    return _compress_jpeg(raw, max_bytes or cfg.ark_max_bytes)
 
 
 def image_to_ref(image_bytes: bytes) -> str:

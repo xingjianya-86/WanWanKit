@@ -38,10 +38,10 @@ _TASK_PROMPT = """\
    调 read_chat_history(session_id="private:{user_id}", limit=20)；
    读不到就调一次 search_cognition 捞今天的片段。
    **禁止**用 run_code 探索文件系统、禁止反复重试读历史。
-2. 调 diary_write 写今天的日记（200-400 字），
+2. 调 diary_write 写今天的日记（200-400 字，**一次调用写完整篇**——同天再写会顶掉前一份），
    以你第一人称口吻记下发生了什么、你的想法和心情，mood 填一个心情词。
    **不要传 date 参数**（默认就是今天，你传错会写到别的日期）。
-3. 调 diary_illustrate 生成配图（画面取材自日记内容），拿到站点 URL。
+3. 调 diary_illustrate 生成配图，scene 写「晚晚在画面里做什么」（画面自动锁定她本人在场，别写空景），拿到站点 URL。
 4. 调 diary_publish 发布，**image_url 必须传上一步的 URL**，
    同样**不要传 date**（默认今天 = {today}）。
 
@@ -49,7 +49,7 @@ _TASK_PROMPT = """\
 
 收尾汇报（**这条会被框架输出闸门审查，写错会整条丢弃**）：
 只说结果——日记写好了 + 完整链接原样贴出
-（形如 https://sua17.cn/blog/posts/{today}/）。
+（形如 https://sua17.cn/blog/posts/diary-{today}/，**以工具返回的完整链接为准、原样贴出**）。
 
 **严禁**出现这些说法（命中即丢弃整条播报）：
 - 「读不到 / 没有那个工具 / 检索 / 换了别的办法 / 失败了」这类过程与能力缺失叙述

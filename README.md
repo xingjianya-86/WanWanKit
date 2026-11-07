@@ -8,13 +8,14 @@
 
 | 工具 | 作用 |
 |------|------|
-| `diary_write` | 写日记到 `data/wanwan/diary/YYYY-MM-DD.md`，同一天多次写会追加 |
-| `diary_illustrate` | 生成配图（带参考图保持画风）→ 转存站点 → 返回站点 URL，同时发到对话 |
-| `diary_publish` | 把某天日记发布到手帐站点（公开），支持配图；同日期同内容自动去重 |
+| `diary_write` | 写日记到 `data/wanwan/diary/YYYY-MM-DD.md`，**同一天再写会覆盖上一份**（旧份挪 `.trash` 备份）——同天只留最新，发布绝不混合 |
+| `diary_illustrate` | 生成配图（带参考图保持画风，**默认锁定晚晚本人在场**、严禁空景）→ 转存站点 → 返回站点 URL，同时发到对话 |
+| `diary_publish` | 把某天日记发布到手帐站点（公开）——**只发当天最新一份**（多份旧记录自动规整进 `.trash`）；同日期同内容自动去重 |
 | `diary_upload_image` | 把外链图片转存到站点，返回可用于配图的 URL |
 | `diary_read` | 读本地日记（指定日期，或最近 N 篇） |
 | `selfie_generate` | 用参考图生成人物自拍并发出 |
 | `voice_say` | 用克隆音色把短句读成语音条发出 |
+| `video_generate` | **生成带配音短视频**（Seedream 生图 + MiMo 配音 + ffmpeg 合成 720p → `data/video_out/`），画面默认锁定晚晚本人 |
 | `phone_look` / `phone_do` | 看 / 操作手机（点、滑、输入、开关应用等白名单动作） |
 | `douyin_browse` / `douyin_comment` | 刷抖音 / 给**当前这条**发评论（自动跳过直播广告；全程不滑走视频；刷完评完自动锁屏收手机） |
 | `douyin_reply` | 回复抖音评论区某条（按作者/内容锚定，保留「回复 @作者」归属前缀） |

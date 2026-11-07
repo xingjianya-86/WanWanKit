@@ -152,11 +152,17 @@ class TestDiary:
         read = diary.read_entries("2026-11-06", base=tmp_path)
         assert "今天天气不错" in read
 
-    def test_write_appends_same_day(self, tmp_path: Path) -> None:
+    def test_write_replaces_same_day(self, tmp_path: Path) -> None:
+        """同天再写 = 覆盖上一份（2026-11-08 规则：同天只留最新，防多份混合）。"""
         diary.write_entry("第一条", "2026-11-06", base=tmp_path)
         diary.write_entry("第二条", "2026-11-06", base=tmp_path)
         content = (tmp_path / "2026-11-06.md").read_text(encoding="utf-8")
-        assert "第一条" in content and "第二条" in content
+        assert "第二条" in content
+        assert "第一条" not in content, "老记录应被新记录替代"
+        # 老份没真删：挪进 .trash 备份（测试残留可追溯）
+        trash = list((tmp_path / ".trash").glob("2026-11-06_*.md"))
+        assert trash, "旧份应备份到 .trash"
+        assert "第一条" in trash[0].read_text(encoding="utf-8")
 
     def test_read_missing_date(self, tmp_path: Path) -> None:
         assert "没有日记" in diary.read_entries("2026-01-01", base=tmp_path)
@@ -290,6 +296,93 @@ class TestDiaryPublish:
         monkeypatch.setattr(diary, "_DIARY_DIR", tmp_path)
         out = asyncio.run(diary._do_publish(object(), "2026-01-01"))
         assert "没有日记" in out
+
+    def test_do_publish_keeps_latest_entry_only(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """旧版追加语义遗留的同天多份 → 只发最新一份，老份挪 .trash（绝不混合）。"""
+        import asyncio
+
+        captured: dict[str, str] = {}
+
+        async def fake_publish(cfg: object, title: str, content_md: str, *, topic: str = "", image: str = "") -> str:
+            captured["content"] = content_md
+            return "已发布：《测试》"
+
+        monkeypatch.setattr(diary.site, "publish_note", fake_publish)
+        monkeypatch.setattr(diary, "_PUBLISHED_FILE", tmp_path / ".published.json")
+        monkeypatch.setattr(diary, "_DIARY_DIR", tmp_path)
+
+        path = tmp_path / "2026-11-07.md"
+        path.write_text(
+            "## 2026-11-07 05:29 · 平静\n\n测试残留的旧份。\n\n"
+            "# 2026-11-07 周六\n\n## 2026-11-07 18:00 · 安稳\n\n最新的一份。",
+            encoding="utf-8",
+        )
+
+        out = asyncio.run(diary._do_publish(object(), "2026-11-07"))
+        assert "已发布" in out
+        assert "最新的一份" in captured["content"]
+        assert "测试残留的旧份" not in captured["content"], "发布内容不得混入旧份"
+        assert "# 2026-11-07 周六" not in captured["content"], "旧份带的大标题也不能混入"
+        # 文件同步规整，老份进 .trash
+        assert "最新的一份" in path.read_text(encoding="utf-8")
+        assert "测试残留的旧份" not in path.read_text(encoding="utf-8")
+        assert list((tmp_path / ".trash").glob("2026-11-07_*.md"))
+
+    def test_split_entries_pure(self) -> None:
+        from wanwan_skills.tools.diary import _split_entries
+
+        chunks = _split_entries("## 05:29 · 平静\n\n甲\n\n## 18:00 · 安稳\n\n乙")
+        assert len(chunks) == 2 and chunks[-1].startswith("## 18:00") and "乙" in chunks[-1]
+        # 无段头的单份原样返回
+        assert _split_entries("只有一段正文") == ["只有一段正文"]
+        assert _split_entries("  \n ") == []
+
+    def test_published_state_dir_quarantined(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """状态路径被误建成目录（2026-11-07 实况）→ 挪走后读写恢复正常。"""
+        state = tmp_path / ".diary_published.json"
+        state.mkdir()  # 复现事故形态
+        monkeypatch.setattr(diary, "_PUBLISHED_FILE", state)
+
+        assert diary._load_published() == {}  # 读不出旧数据但不炸
+        assert not state.is_dir(), "目录应被挪走"
+
+        diary._save_published({"2026-11-07": {"sha": "abc123"}})
+        assert state.is_file()
+        assert diary._load_published()["2026-11-07"]["sha"] == "abc123"
+
+    def test_illustrate_character_lock(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """配图必须拼形象锚点（2026-11-07 曾生成纯空景）；锁关掉才只画 scene。"""
+        import asyncio
+        from types import SimpleNamespace
+
+        from wanwan_skills.core.look import WANWAN_LOOK
+
+        ref = tmp_path / "ref.jpg"
+        ref.write_bytes(b"\xff\xd8fake")
+        cfg = SimpleNamespace(ark_ready=True, site_ready=True, ref_image=str(ref))
+        monkeypatch.setattr(diary, "load_config", lambda: cfg)
+
+        prompts: list[str] = []
+
+        async def fake_gen(_cfg: object, prompt: str, **kw: object) -> bytes:
+            prompts.append(prompt)
+            return b"img-bytes"
+
+        async def fake_upload(_cfg: object, _data: bytes, _mime: str) -> str:
+            return "https://sua17.cn/media/assets/x/wanwan.jpg"
+
+        monkeypatch.setattr(diary.ark, "generate_image", fake_gen)
+        monkeypatch.setattr(diary.site, "upload_image_bytes", fake_upload)
+        ctx = SimpleNamespace(deps=SimpleNamespace(bot=None, allow_user_outbound=False))
+
+        asyncio.run(diary.diary_illustrate(ctx, "趴在沙坑边写日记"))
+        assert WANWAN_LOOK in prompts[0], "默认必须拼形象锚点"
+        assert "画面：趴在沙坑边写日记" in prompts[0]
+        # prompt 顺序：锚点在 scene 前（空景 scene 也拦得住）
+        assert prompts[0].index(WANWAN_LOOK) < prompts[0].index("画面：")
+
+        asyncio.run(diary.diary_illustrate(ctx, "空旷的海底沙坑", character_lock=False))
+        assert WANWAN_LOOK not in prompts[1], "明确关锁时不拼锚点"
 
     def test_upload_parses_item_url(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """站点返回 {item:{url}}，我曾按 {url} 解析导致「响应缺 url」。"""
@@ -936,3 +1029,187 @@ class TestDouyinPost:
         monkeypatch.setattr(dy, "_dy_run", _nologin)
         out4 = asyncio.run(dy.douyin_post(ctx, str(vid), "再换个标题"))
         assert out4.startswith("⚠️") and "扫码" in out4
+
+
+class TestVideoAssemble:
+    """ffmpeg 合成段：时长均分与滤镜链是纯函数，直接锁死。"""
+
+    def test_split_durations(self) -> None:
+        from wanwan_skills.core.video import _split_durations
+
+        # 10s / 3 画面：每段向上取 0.1，末段吃余量
+        assert _split_durations(10.0, 3) == [3.4, 3.4, 3.2]
+        # 单画面：整段
+        assert _split_durations(8.0, 1) == [8.0]
+        # 末段兜底 0.5s（宁长勿短，防截配音尾巴）
+        durs = _split_durations(1.0, 4)
+        assert durs[-1] >= 0.5
+        assert sum(durs) >= 1.0
+
+    def test_assemble_cmd_shape(self, tmp_path: Path) -> None:
+        from wanwan_skills.core.video import assemble_cmd
+
+        imgs = [tmp_path / "a.jpg", tmp_path / "b.jpg"]
+        cmd = assemble_cmd(imgs, tmp_path / "n.wav", 6.0, tmp_path / "o.mp4")
+        # 每图一输入带 -loop/-t，音频最后
+        assert cmd.count("-loop") == 2
+        assert cmd[cmd.index("-i") + 1] == str(imgs[0])
+        fc = cmd[cmd.index("-filter_complex") + 1]
+        assert "scale=1280:720" in fc and "pad=1280:720" in fc
+        assert "concat=n=2:v=1:a=0[vout]" in fc
+        assert "aresample=44100[aout]" in fc
+        assert cmd[cmd.index("-map") + 1] == "[vout]"
+        assert "-crf" in cmd and "libx264" in cmd and "+faststart" in cmd
+        assert cmd[-1] == str(tmp_path / "o.mp4")
+
+    def test_pad_cmd_shape(self, tmp_path: Path) -> None:
+        from wanwan_skills.core.video import pad_cmd
+
+        cmd = pad_cmd(tmp_path / "n.wav", tmp_path / "p.mp3", 1.0)
+        assert "anullsrc=r=24000:cl=mono" in cmd
+        fc = cmd[cmd.index("-filter_complex") + 1]
+        assert "[0:a][1:a]concat=n=2:v=0:a=1" in fc  # 静音轨拼在原音频前
+        assert "libmp3lame" in cmd
+        assert "1.000" in cmd  # 时长格式化
+
+    def test_parse_duration(self) -> None:
+        from wanwan_skills.core.video import _parse_duration
+
+        assert _parse_duration("12.34\n") == 12.34
+        assert _parse_duration("") == 0.0
+        assert _parse_duration("N/A") == 0.0  # 探不到 → 上层报「时长异常」
+
+    def test_character_lock(self) -> None:
+        from wanwan_skills.core.video import WANWAN_LOOK
+        from wanwan_skills.tools.media import _apply_character_lock
+
+        locked = _apply_character_lock(["海边散步"], True)
+        assert locked[0].startswith(WANWAN_LOOK) and "场景：海边散步" in locked[0]
+        assert _apply_character_lock(["海边散步"], False) == ["海边散步"]
+
+
+class TestVideoGenerate:
+    """video_generate 护栏（网络/ffmpeg 前全拦）+ 全 mock 成功链。"""
+
+    @staticmethod
+    def _ctx():
+        from types import SimpleNamespace
+
+        return SimpleNamespace(deps=SimpleNamespace(bot=None, allow_user_outbound=False))
+
+    def test_guards(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import asyncio
+        from types import SimpleNamespace
+
+        from wanwan_skills.tools import media
+
+        ctx = self._ctx()
+
+        monkeypatch.setattr(media, "load_config", lambda: None)
+        out = asyncio.run(media.video_generate(ctx, ["a"], "n"))
+        assert out.startswith("⚠️") and "未配置" in out
+
+        monkeypatch.setattr(media, "load_config", lambda: SimpleNamespace(ark_ready=False, mimo_ready=True))
+        out = asyncio.run(media.video_generate(ctx, ["a"], "n"))
+        assert "ark_api_key" in out
+
+        monkeypatch.setattr(media, "load_config", lambda: SimpleNamespace(ark_ready=True, mimo_ready=False))
+        out = asyncio.run(media.video_generate(ctx, ["a"], "n"))
+        assert "mimo_api_key" in out
+
+        monkeypatch.setattr(media, "load_config", lambda: SimpleNamespace(ark_ready=True, mimo_ready=True))
+        out = asyncio.run(media.video_generate(ctx, [], "n"))
+        assert "scenes" in out
+        out = asyncio.run(media.video_generate(ctx, ["a"] * 9, "n"))
+        assert "画面最多 8" in out
+        out = asyncio.run(media.video_generate(ctx, ["a"], "  "))
+        assert "narration" in out
+        out = asyncio.run(media.video_generate(ctx, ["a"], "字" * 1001))
+        assert "配音过长" in out
+
+    def test_success_pipeline_mocked(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        import asyncio
+        from types import SimpleNamespace
+
+        from wanwan_skills.core import video as vid
+        from wanwan_skills.tools import media
+
+        monkeypatch.setattr(media, "_VIDEO_OUT", tmp_path)
+        monkeypatch.setattr(media, "load_config", lambda: SimpleNamespace(ark_ready=True, mimo_ready=True))
+        ctx = self._ctx()
+
+        prompts: list[str] = []
+        pad_calls: list[float] = []
+
+        async def _tts(_cfg: object, text: str) -> bytes:
+            assert text == "两段配音"
+            return b"RIFF-fake-wav"
+
+        def _pad(_src: Path, dst: Path, lead: float) -> None:
+            pad_calls.append(lead)
+            dst.write_bytes(b"fake-mp3")
+
+        durs = iter([6.0, 6.2])  # 第一次=配音时长，第二次=成品时长
+
+        async def _gen(
+            _cfg: object,
+            p: str,
+            *,
+            size: str = "1K",
+            watermark: bool = False,
+            ref_images: list[str] | None = None,
+            max_bytes: int | None = None,
+        ) -> bytes:
+            prompts.append(p)
+            assert size == "1280x720" and max_bytes == media._FRAME_MAX_BYTES
+            return b"jpeg-bytes"
+
+        def _asm(images: list[Path], _audio: Path, total: float, out: Path) -> None:
+            assert len(images) == 2 and abs(total - 6.0) < 1e-6
+            out.write_bytes(b"\x00" * 4096)
+
+        monkeypatch.setattr(media.mimo, "synthesize", _tts)
+        monkeypatch.setattr(vid, "pad_audio", _pad)
+        monkeypatch.setattr(vid, "duration", lambda _p: next(durs))
+        monkeypatch.setattr(media.ark, "generate_image", _gen)
+        monkeypatch.setattr(vid, "assemble", _asm)
+
+        # lead_silence 传坏值 → 回落默认 1.0（不崩）
+        out = asyncio.run(media.video_generate(ctx, ["画面A", "画面B"], "两段配音", lead_silence="bad"))
+        assert out.startswith("✅") and "画面 2 个" in out and "时长 6.2 秒" in out
+        assert pad_calls == [1.0]
+        # 形象锁定默认开：画面提示词都拼上了完整人形锚点
+        assert all("Q版小鲨鱼女孩的完整人形" in p for p in prompts)
+        # 成品留在 video_out，work 现场已清理
+        assert list(tmp_path.glob("video_*.mp4"))
+        assert not list(tmp_path.glob("tmp_*"))
+
+    def test_failure_keeps_workdir(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """失败不发半成品，且保留现场路径告诉主人。"""
+        import asyncio
+        from types import SimpleNamespace
+
+        from wanwan_skills.core import video as vid
+        from wanwan_skills.tools import media
+
+        monkeypatch.setattr(media, "_VIDEO_OUT", tmp_path)
+        monkeypatch.setattr(media, "load_config", lambda: SimpleNamespace(ark_ready=True, mimo_ready=True))
+
+        async def _tts(_cfg: object, _text: str) -> bytes:
+            return b"RIFF"
+
+        def _pad(_src: Path, dst: Path, _lead: float) -> None:
+            dst.write_bytes(b"fake-mp3")  # 不真跑 ffmpeg（假字节过不了解码）
+
+        async def _gen(*_a: object, **_k: object) -> bytes:
+            raise media.ark.ArkError("方舟返回 500: boom")
+
+        monkeypatch.setattr(media.mimo, "synthesize", _tts)
+        monkeypatch.setattr(vid, "pad_audio", _pad)
+        monkeypatch.setattr(vid, "duration", lambda _p: 6.0)
+        monkeypatch.setattr(media.ark, "generate_image", _gen)
+
+        out = asyncio.run(media.video_generate(self._ctx(), ["画面A"], "一段配音"))
+        assert out.startswith("⚠️") and "生图失败" in out and "第1张" in out
+        assert "中间文件在" in out and list(tmp_path.glob("tmp_*"))
+        assert not list(tmp_path.glob("video_*.mp4"))  # 不留半成品
