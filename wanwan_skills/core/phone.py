@@ -177,16 +177,21 @@ def _parse_ui(xml_text: str) -> list[UINode]:
 async def type_text(serial: str, text: str) -> bool:
     """用 AdbKeyboard 输入中文。返回是否在界面上看到输入结果。
 
-    先清空输入框（上次残留会拼在新文字后面），再广播正文。
+    先读输入框现有长度、用批量 DEL 清空（ADB_INPUT_CLEAR_TEXT 在
+    抖音上不生效，不清会把新旧文字拼在一起），再广播正文。
     """
     payload = base64.b64encode(text.encode("utf-8")).decode("ascii")
 
     # 切到 AdbKeyboard（失败不致命，继续试广播）
     await adb.shell(serial, "ime", "set", ADB_IME, timeout=20)
-    # 清空输入框：不同版本 action 名不同，两个都试
-    for action in ("ADB_INPUT_CLEAR_TEXT", "ADB_CLEAR_TEXT"):
-        await adb.shell(serial, "am", "broadcast", "-a", action, timeout=15)
-        await asyncio.sleep(0.4)
+
+    # 批量删掉残留：keyevent 67=DEL，一次可带多个
+    nodes = await ui(serial)
+    existing = max((len(n.text) for n in nodes if n.y1 >= 2170 and n.text), default=0)
+    if existing:
+        dels = ["67"] * min(existing + 3, 60)
+        await adb.shell(serial, "input", "keyevent", *dels, timeout=25)
+        await _async_sleep(0.8)
 
     for _ in range(3):
         await adb.shell(
@@ -223,11 +228,17 @@ async def launch(serial: str, package: str) -> None:
     await _async_sleep(4.0)
 
 
-async def screenshot(serial: str, cfg: WanwanConfig, name: str = "wanwan") -> bytes:
-    """截图并落盘，返回 PNG 字节。"""
+async def capture(serial: str) -> bytes:
+    """截屏返回 PNG 字节（不落盘）——供像素级定位用。"""
     data = await _screencap_bytes(serial)
     if not data:
         raise adb.AdbError("截图返回空数据（手机可能已锁屏或离线）")
+    return data
+
+
+async def screenshot(serial: str, cfg: WanwanConfig, name: str = "wanwan") -> bytes:
+    """截图并落盘，返回 PNG 字节。"""
+    data = await capture(serial)
 
     out_dir = Path(cfg.phone_shot_dir or "/tmp")
     out_dir.mkdir(parents=True, exist_ok=True)

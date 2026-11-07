@@ -389,6 +389,78 @@ class TestDouyinJunk:
         assert v.likes == "9"
 
 
+class TestVision:
+    """截屏像素定位：dump 坐标在键盘打开后不可信，只能信截图。"""
+
+    @staticmethod
+    def _png(size: tuple[int, int], boxes: list[tuple[int, int, int, int, tuple[int, int, int]]]) -> bytes:
+        """造一张图：白底 + 若干色块 [(x1,y1,x2,y2,rgb), ...]。"""
+        import io
+
+        from PIL import Image, ImageDraw
+
+        im = Image.new("RGB", size, (255, 255, 255))
+        draw = ImageDraw.Draw(im)
+        for x1, y1, x2, y2, rgb in boxes:
+            draw.rectangle([x1, y1, x2, y2], fill=rgb)
+        buf = io.BytesIO()
+        im.save(buf, format="PNG")
+        return buf.getvalue()
+
+    def test_finds_douyin_red_button(self) -> None:
+        from wanwan_skills.core.vision import find_color_button
+
+        # 400x800，按钮在下半部（y_min_ratio=0.4 以下）
+        png = self._png((400, 800), [(100, 600, 290, 690, (254, 44, 85))])
+        blob = find_color_button(png, (254, 44, 85))
+        assert blob is not None
+        cx, cy = blob.center
+        assert abs(cx - 195) <= 8 and abs(cy - 645) <= 8
+
+    def test_small_red_distractors_ignored(self) -> None:
+        from wanwan_skills.core.vision import find_color_button
+
+        # 表情/小图标级别的红块（< min_run=70）不该被当成按钮
+        png = self._png(
+            (400, 800),
+            [(30, 700, 70, 740, (254, 44, 85)), (200, 720, 240, 760, (254, 44, 85))],
+        )
+        assert find_color_button(png, (254, 44, 85)) is None
+
+    def test_picks_largest_of_two_buttons(self) -> None:
+        from wanwan_skills.core.vision import find_color_button
+
+        png = self._png(
+            (400, 800),
+            [
+                (20, 400, 140, 470, (254, 44, 85)),  # 小一点的红块
+                (180, 620, 370, 710, (254, 44, 85)),  # 真按钮，面积更大
+            ],
+        )
+        blob = find_color_button(png, (254, 44, 85))
+        assert blob is not None
+        assert blob.x1 == 180 and blob.y1 == 620
+
+    def test_dimmed_red_rejected(self) -> None:
+        from wanwan_skills.core.vision import find_color_button
+
+        # 面板遮罩下的暗红（视频背景）不能误判
+        png = self._png((400, 800), [(100, 600, 290, 690, (127, 22, 42))])
+        assert find_color_button(png, (254, 44, 85)) is None
+
+    def test_invalid_png_returns_none(self) -> None:
+        from wanwan_skills.core.vision import find_color_button
+
+        assert find_color_button(b"not a png", (254, 44, 85)) is None
+
+    def test_button_above_scan_region_ignored(self) -> None:
+        from wanwan_skills.core.vision import find_color_button
+
+        # 屏幕上半部的红块（如视频里的红衣服）不该被当成底部按钮
+        png = self._png((400, 800), [(100, 60, 290, 150, (254, 44, 85))])
+        assert find_color_button(png, (254, 44, 85)) is None
+
+
 class TestTaskPrompt:
     """任务 prompt 用 .format(today=...)，花括号写错会直接 KeyError。"""
 

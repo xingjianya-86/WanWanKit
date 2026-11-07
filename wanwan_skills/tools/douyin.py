@@ -20,7 +20,7 @@ from gsuid_core.segment import MessageSegment
 from pydantic_ai import RunContext
 
 from ..config import load_config
-from ..core import adb, phone
+from ..core import adb, phone, vision
 
 _CAP_DOMAIN = "抖音"
 _COVERS = [
@@ -262,8 +262,8 @@ async def douyin_comment(
             btn = await _locate_comment_btn(serial)
             if btn is None:
                 return "⚠️ 连刷 5 条都没找到评论按钮（可能一直在直播/广告页）"
-            await phone.tap(serial, *btn.center)
-            await asyncio.sleep(random.uniform(1.2, 2.0))
+            if not await _open_comment_panel(serial, btn):
+                return "⚠️ 评论面板没打开（可能点偏或界面异常）"
 
             # 点底部输入条展开面板，再点真正的输入框聚焦（否则键盘不上屏）
             box = await _find_comment_input(serial)
@@ -283,18 +283,27 @@ async def douyin_comment(
             await asyncio.sleep(random.uniform(0.6, 1.2))
             send = await _find_send_btn(serial)
             if send is None:
-                # 一次重试：重新聚焦输入框再找（面板偶发未完全展开）
-                await phone.tap(serial, *box.center)
+                # 一次重试：等面板动画走完再截屏找（不点 box——键盘已开，dump 坐标不可信）
                 await asyncio.sleep(random.uniform(0.8, 1.2))
                 send = await _find_send_btn(serial)
             if send is None:
-                # 留下底部控件快照，便于下次定位是哪一环断了
+                await _abort_panel(serial)
                 nodes = await phone.ui(serial)
                 bottom = [f"y={n.y1},{(n.text or n.desc).strip()[:12]!r}" for n in nodes if n.y1 >= 2100][:12]
                 logger.warning(f"[wanwan] 发送按钮未找到，底部控件: {bottom}")
-                return "⚠️ 没找到发送按钮，评论可能未发出"
-            await phone.tap(serial, *send.center)
-            await asyncio.sleep(random.uniform(1.0, 1.8))
+                return "⚠️ 没找到发送按钮，评论未发出"
+            await phone.tap(serial, *send)
+            await asyncio.sleep(random.uniform(1.2, 1.8))
+
+            # 验证：发送成功会清空输入框；没清空说明点击没生效，再点一次
+            if await _text_still_there(serial, clean):
+                await phone.tap(serial, *send)
+                await asyncio.sleep(random.uniform(1.2, 1.8))
+            if await _text_still_there(serial, clean):
+                await _abort_panel(serial)
+                logger.warning("[wanwan] 发送按钮点击两次仍无效，已放弃")
+                return "⚠️ 点击发送无效，评论未发出（文字仍在输入框）"
+
             shot = await phone.screenshot(serial, cfg, name="douyin_comment")
     except adb.AdbError as exc:
         return f"⚠️ {exc}"
@@ -309,6 +318,21 @@ async def douyin_comment(
         except Exception:  # noqa: BLE001 —— 截图发不出不影响评论结果
             pass
     return f"✅ 评论已发送：{clean}"
+
+
+async def _text_still_there(serial: str, text: str) -> bool:
+    """输入框里是否还留着这段文字（发送成功会被清空）。
+
+    只认 dump 底部输入条区域（y>=2170）：评论列表里的同文节点是发出去之后
+    才出现的，位置更高（y<=2160），不排除会把「发成功」误判成「没发出」。
+    """
+    nodes = await phone.ui(serial)
+    return any(text[:6] in n.text and n.y1 >= 2170 for n in nodes)
+
+
+async def _abort_panel(serial: str) -> None:
+    """失败时关掉评论面板，别让手机卡在界面上。"""
+    await _close_comment_panel(serial)
 
 
 async def _close_comment_panel(serial: str, attempts: int = 3) -> bool:
@@ -366,6 +390,39 @@ async def _find_comment_btn(serial: str) -> object | None:
     return None
 
 
+def _is_comment_panel_open(nodes: list) -> bool:
+    """评论面板是否真的打开。
+
+    面板特征：顶部有「关闭」按钮 或 「评论 N」标题（y<1000）。
+    只靠「底部有可点宽控件」判断会误命中首页导航栏。
+    """
+    for n in nodes:
+        t = (n.text or n.desc).strip()
+        if n.y1 < 1000 and t in ("关闭", "缩小评论"):
+            return True
+        if n.y1 < 1000 and t.startswith("评论 ") and "，" not in t:
+            return True
+    return False
+
+
+async def _open_comment_panel(serial: str, btn: object) -> bool:
+    """点评论按钮并**验证面板真的打开**（没开就重试）。
+
+    只点不验证会让后续步骤在首页导航栏上乱点。
+    """
+    for attempt in range(3):
+        await phone.tap(serial, *btn.center)
+        await asyncio.sleep(2.0 + attempt * 0.8)
+        nodes = await phone.ui(serial)
+        if _is_comment_panel_open(nodes):
+            return True
+        # 没开：可能点偏或界面在切换，重新定位按钮
+        btn2 = await _locate_comment_btn(serial)
+        if btn2 is not None:
+            btn = btn2
+    return False
+
+
 async def _find_comment_input(serial: str) -> object | None:
     """找评论输入框。
 
@@ -375,27 +432,48 @@ async def _find_comment_input(serial: str) -> object | None:
     """
     strong = ("爱评论的人", "善语", "说点什么", "留言")
     nodes = await phone.ui(serial)
+
+    # 面板没开就别找——否则兜底会命中首页底部导航栏
+    if not _is_comment_panel_open(nodes):
+        return None
+
     for n in nodes:
         t = (n.text or n.desc).strip()
         if any(k in t for k in strong):
             return n
-    # 兜底：底部（y>=2170）可点且宽 >=400 的控件
-    # 注意真输入容器宽约 570，别设 600 这种会漏掉的阈值
+    # 兜底：底部（y>=2170）可点且宽 >=400 的控件。
+    # 不能按 x1 过滤——真输入框 x1=30（左侧起始），加了会误伤；
+    # 面板已由 _is_comment_panel_open 确认打开，此时底部没有导航栏。
     for n in nodes:
         if n.clickable and n.y1 >= 2170 and (n.x2 - n.x1) >= 400:
             return n
     return None
 
 
-async def _find_send_btn(serial: str) -> object | None:
-    """找发送按钮。
+async def _find_send_btn(serial: str) -> tuple[int, int] | None:
+    """找「发送」按钮的**真实像素坐标**。
 
-    抖音把「发送」文字放在不可点的 TextView 上，可点的是旁边空 View，
-    所以不能要求 clickable；只需限定底部 y>2100，避免点到评论列表的「回复」。
+    键盘/表情面板打开后 dump 坐标不可信（报 y=2208、真实 y≈1245），按 dump 点必点空，
+    所以优先截屏找抖音红 (#FE2C55) 实心按钮；截屏找不到时才退回 dump
+    （此时要求面板开着、且取包含「发送」文字的**面积最小**可点节点——
+    抖音把文字放在不可点 TextView 上、bounds 还可能只有 2px 高，直接点会偏）。
     """
+    try:
+        blob = vision.find_color_button(await phone.capture(serial), (254, 44, 85))
+    except adb.AdbError:
+        blob = None
+    if blob is not None:
+        return blob.center
+
     nodes = await phone.ui(serial)
     for n in nodes:
         t = (n.text or n.desc).strip()
-        if n.y1 > 2100 and ("发送" in t or "发布" in t):
-            return n
+        if n.y1 <= 2100 or not ("发送" in t or "发布" in t):
+            continue
+        # 回溯包含它的可点父节点，取面积最小的（直接返回会命中根布局 (0,0)-(1080,2210)）
+        parents = [p for p in nodes if p.clickable and p.x1 <= n.x1 and p.y1 <= n.y1 and p.x2 >= n.x2 and p.y2 >= n.y2]
+        if parents:
+            picked = min(parents, key=lambda p: (p.x2 - p.x1) * (p.y2 - p.y1))
+            return picked.center
+        return n.center
     return None
