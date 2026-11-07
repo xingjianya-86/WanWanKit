@@ -10,6 +10,7 @@ import asyncio
 import json
 import random
 import re
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -158,13 +159,15 @@ async def _ensure_bilibili(serial: str) -> None:
         await asyncio.sleep(8)
 
 
-async def _goto_feed(serial: str) -> bool:
+async def _goto_feed(serial: str, deadline: float | None = None) -> bool:
     """回到推荐列表（能看到视频卡片）。
 
     不乱按返回：优先点「推荐」tab；只有不在列表时才 BACK
-    （在列表上按 BACK 会退出 App）。
+    （在列表上按 BACK 会退出 App）。deadline 控制最坏耗时。
     """
     for _ in range(4):
+        if deadline is not None and time.monotonic() > deadline:
+            return False
         nodes = await phone.ui(serial)
         if _has_video_card(nodes):
             return True
@@ -238,11 +241,12 @@ async def bilibili_browse(
     ctx: RunContext[ToolContext],
     limit: int = 5,
 ) -> str:
-    """刷B站推荐：逐条点开看，返回清单（UP/标题/播放）。
+    """刷B站推荐：列表逐条浏览（滑动加载），返回清单（UP/标题/播放）。
 
-    读操作，不点赞不评论。**刷完自动锁屏收手机**（B站留后台，重开恢复
-    这条）；之后 bilibili_comment 评论的就是这条，全程不滑走视频。
-    广告/会员购/直播等卡自动跳过。
+    读操作，不点赞不评论；最后点开最新那条**停在视频页**，之后
+    bilibili_comment 评论的就是这条，全程不滑走视频。
+    广告/会员购/直播等卡自动跳过；**195s 墙钟预算**，超时带部分结果返回。
+    有内置预算，dump 慢也会带着已读结果返回。
 
     Args:
         limit: 看几条，默认5，最大10。
@@ -252,11 +256,16 @@ async def bilibili_browse(
         return "⚠️ 手机通道未配置"
     serial = cfg.phone_serial
     cap = max(1, min(limit, 10))
+    # 墙钟预算：工具超时 240s，留足收尾（截图/发图/锁屏）余量。
+    # B站页面 dump 慢时（uiautomator idle 等待），预算保证**带着结果返回**
+    # 而不是被框架整体杀掉、进度全丢（14:14 实测被杀）。
+    start = time.monotonic()
+    budget_deadline = start + 195.0
 
     try:
         async with adb.device(serial), phone.put_away_on_exit(serial):
             await _ensure_bilibili(serial)
-            if not await _goto_feed(serial):
+            if not await _goto_feed(serial, deadline=budget_deadline):
                 return "⚠️ 打不开B站推荐页（可能停在开屏广告/登录页），请先手动打开B站首页"
             await asyncio.sleep(1.0)
 
@@ -265,12 +274,14 @@ async def bilibili_browse(
             junk: set[str] = set()
             attempts = 0
             max_attempts = cap * 6
+            last_node = None
             last_title = ""
 
-            while len(seen) < cap and attempts < max_attempts:
+            # 列表扫描式浏览：读卡不逐条点开（点开-返回每条 ~10s，必爆超时），
+            # 只在最后点开最新那条停在视频页，供 bilibili_comment 落点。
+            while len(seen) < cap and attempts < max_attempts and time.monotonic() < budget_deadline:
                 attempts += 1
                 nodes = await phone.ui(serial)
-                target: tuple[object, _Card] | None = None
                 for n in nodes:
                     if not n.clickable:
                         continue
@@ -281,46 +292,34 @@ async def bilibili_browse(
                         continue
                     card = _parse_card(desc)
                     if card and card.title not in visited:
-                        target = (n, card)
-                        break
-
-                if target is None:
-                    # 当前屏没有未看过的视频卡 → 滑动加载（到底时靠 attempts 兜底）
-                    await _scroll_list(serial)
-                    continue
-
-                node, card = target
-                await phone.tap(serial, *node.center)
-                await asyncio.sleep(4.0)
-
-                nodes_b = await phone.ui(serial)
-                if not _on_video_page(nodes_b):
-                    # 没进视频页（点偏/弹窗）：不在列表才 BACK，避免在列表上退出 App
-                    if not _has_video_card(nodes_b):
-                        await adb.shell(serial, "input", "keyevent", "4")
-                        await asyncio.sleep(1.5)
-                    continue
-
-                seen.append(card)
-                visited.add(card.title)
-                last_title = card.title
-                if len(seen) < cap:
-                    await adb.shell(serial, "input", "keyevent", "4")  # 回列表接着看
-                    await asyncio.sleep(1.8)
+                        seen.append(card)
+                        visited.add(card.title)
+                        last_node = n
+                        last_title = card.title
+                        if len(seen) >= cap:
+                            break
+                if len(seen) >= cap:
+                    break
+                await _scroll_list(serial)
 
             if not seen:
                 return "⚠️ 没读到视频内容（可能停在开屏广告/登录页），请先手动打开B站首页"
+            if time.monotonic() >= budget_deadline:
+                logger.warning(f"[wanwan] bilibili_browse 预算用尽，返回已读 {len(seen)} 条")
 
-            # 兜底：没能停在视频页时，把最后看的那条重新点开（评论要落在它上面）
-            if not _on_video_page(await phone.ui(serial)):
-                nodes = await phone.ui(serial)
-                again = next(
-                    (n for n in nodes if n.clickable and last_title and last_title in (n.desc or "")),
-                    None,
-                )
-                if again is not None:
-                    await phone.tap(serial, *again.center)
-                    await asyncio.sleep(4.0)
+            # 点开最后看的那条，停在视频页（评论要落在它上面）
+            if last_node is not None:
+                await phone.tap(serial, *last_node.center)
+                await asyncio.sleep(4.0)
+                nodes_after = await phone.ui(serial)
+                if not _on_video_page(nodes_after):
+                    again = next(
+                        (n for n in nodes_after if n.clickable and last_title and last_title in (n.desc or "")),
+                        None,
+                    )
+                    if again is not None:
+                        await phone.tap(serial, *again.center)
+                        await asyncio.sleep(4.0)
 
             shot = await phone.screenshot(serial, cfg, name="bilibili")
     except adb.AdbError as exc:

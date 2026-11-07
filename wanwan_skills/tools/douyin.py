@@ -10,6 +10,7 @@ import asyncio
 import json
 import random
 import re
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -173,6 +174,8 @@ async def douyin_browse(
         return "⚠️ 手机通道未配置"
     serial = cfg.phone_serial
     cap = max(1, min(limit, 15))
+    # 墙钟预算：工具超时 180s，留收尾余量——dump 慢时带部分结果返回，不被整体杀掉
+    budget_deadline = time.monotonic() + 150.0
 
     try:
         async with adb.device(serial):
@@ -184,7 +187,7 @@ async def douyin_browse(
             last_raw = ""
             attempts = 0
             max_attempts = cap * 4  # 防死循环：直播/广告连播时有上限
-            while len(seen) < cap and attempts < max_attempts:
+            while len(seen) < cap and attempts < max_attempts and time.monotonic() < budget_deadline:
                 attempts += 1
                 # 界面切换/加载需要时间：轮询直到读到完整信息（有描述或赞数）
                 v = None
