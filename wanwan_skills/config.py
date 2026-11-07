@@ -36,6 +36,8 @@ _DEFAULTS: dict[str, object] = {
     "site_timeout": 60.0,
     "voice_file": "/gsuid_core/data/voice_src/xilian_30s.mp3",
     "ref_image": "/gsuid_core/data/wanwan/wanwan_ref.jpg",
+    # B站登录态文件（浏览器 Cookie 一行：SESSDATA=..; bili_jct=..）。发动态/投稿用
+    "bili_token_path": "/gsuid_core/data/wanwan/.bili_token",
     "voice_style": ("低沉圆钝、慢半拍，嘴硬心软，像泡在深海里说话，尾音轻轻收住，偶尔带一点嗷呜的语气。"),
 }
 
@@ -75,6 +77,9 @@ class WanwanConfig:
     phone_ime: str
     phone_shot_dir: str
 
+    # B站 API 登录态文件（给默认值：手工构造 WanwanConfig 的旧测试/调用不破坏）
+    bili_token_path: str = ""
+
     @property
     def session_id(self) -> str:
         """与 Event.session_id 同格式：{ws}:{bot}:{bot_self}:private:{user}。"""
@@ -108,6 +113,15 @@ class WanwanConfig:
     def site_ready(self) -> bool:
         """日记站点是否可用。"""
         return bool(self.site_base_url) and bool(self.site_username) and bool(self.site_password)
+
+    @property
+    def bili_ready(self) -> bool:
+        """B站 API 登录态文件是否就位。"""
+        try:
+            p = Path(self.bili_token_path)
+            return bool(self.bili_token_path) and p.is_file() and p.stat().st_size > 0
+        except OSError:
+            return False
 
 
 def _read_password_file(path: str) -> str:
@@ -176,4 +190,5 @@ def load_config() -> WanwanConfig | None:
         phone_serial=_s("phone_serial"),
         phone_ime=_s("phone_ime"),
         phone_shot_dir=_s("phone_shot_dir"),
+        bili_token_path=_s("bili_token_path"),
     )

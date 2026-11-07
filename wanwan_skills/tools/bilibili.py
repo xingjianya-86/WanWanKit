@@ -21,7 +21,7 @@ from gsuid_core.segment import MessageSegment
 from pydantic_ai import RunContext
 
 from ..config import load_config
-from ..core import adb, phone, vision
+from ..core import adb, bili_api, phone, vision
 
 _CAP_DOMAIN = "哔哩哔哩"
 _COVERS = [
@@ -29,6 +29,7 @@ _COVERS = [
     "给B站视频评论",
     "B站推荐流",
     "B站视频评论",
+    "发B站动态 / 发布文字动态",
 ]
 
 BILI_PKG = "tv.danmaku.bili"
@@ -39,6 +40,7 @@ _SKIP_PREFIX = ("创作推广", "会员购", "直播", "番剧", "影剧", "活�
 _PINK = (251, 114, 153)
 
 _USED_COMMENTS = Path("/gsuid_core/data/wanwan/.bili_used_comments.json")
+_USED_POSTS = Path("/gsuid_core/data/wanwan/.bili_post_used.json")
 
 
 @dataclass(frozen=True)
@@ -75,6 +77,16 @@ def _mark_comment_used(text: str) -> None:
     used = _used_comments()
     used.append(text)
     _save_json(_USED_COMMENTS, {"used": used[-200:]})
+
+
+def _used_posts() -> list[str]:
+    return list(_load_json(_USED_POSTS).get("used", []))
+
+
+def _mark_post_used(text: str) -> None:
+    used = _used_posts()
+    used.append(text)
+    _save_json(_USED_POSTS, {"used": used[-100:]})
 
 
 def _parse_card(desc: str) -> _Card | None:
@@ -617,3 +629,44 @@ async def bilibili_reply(
         except Exception:  # noqa: BLE001 —— 截图发不出不影响回复结果
             pass
     return f"✅ 回复已发送：{clean}"
+
+
+@ai_tools(
+    category="common",
+    capability_domain=_CAP_DOMAIN,
+    covers=_COVERS,
+    code_callable=False,
+    timeout=90.0,
+)
+async def bilibili_post(
+    ctx: RunContext[ToolContext],
+    text: str,
+) -> str:
+    """在B站账号发布一条**文字动态**（走 B站 Web API，不操作手机）。
+
+    只发主人确认过的正文原文——本工具不改写、不代写。文字动态没有独立
+    标题位，想带标题就把标题写成正文第一行。同一段内容不重复发；
+    失败原样返回原因（登录态过期/风控等），不会硬闯。
+
+    Args:
+        text: 动态正文（要发什么就写什么，含首行标题）。
+    """
+    cfg = load_config()
+    if cfg is None:
+        return "⚠️ wanwan_skills 未配置（缺 plugins_configs/wanwan_skills.json）"
+    clean = (text or "").strip()
+    if not clean:
+        return "⚠️ 请提供 text（动态正文）"
+    if not cfg.bili_ready:
+        return "⚠️ 缺 B站登录态：把 Cookie（SESSDATA; bili_jct）写进 bili_token_path 指向的文件"
+    if clean in _used_posts():
+        return "⚠️ 这条动态已经发过了，换一段"
+
+    bili_api.set_token_path(cfg.bili_token_path)
+    out = await asyncio.to_thread(bili_api.post_dynamic, clean)
+    if out.startswith("ERROR"):
+        return "⚠️ " + out[6:].lstrip(": ").strip()
+
+    _mark_post_used(clean)
+    logger.info(f"[wanwan] B站动态已发：{clean[:40]}")
+    return f"✅ {out}"

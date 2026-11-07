@@ -17,7 +17,10 @@
 | `voice_say` | 用克隆音色把短句读成语音条发出 |
 | `phone_look` / `phone_do` | 看 / 操作手机（点、滑、输入、开关应用等白名单动作） |
 | `douyin_browse` / `douyin_comment` | 刷抖音 / 给**当前这条**发评论（自动跳过直播广告；全程不滑走视频；刷完评完自动锁屏收手机） |
+| `douyin_reply` | 回复抖音评论区某条（按作者/内容锚定，保留「回复 @作者」归属前缀） |
 | `bilibili_browse` / `bilibili_comment` | 刷B站推荐 / 给**当前这条**发评论（同上；广告/会员购卡自动跳过） |
+| `bilibili_reply` | 回复B站评论区某条（锚定逻辑同上） |
+| `bilibili_post` | **发布B站文字动态（走 Web API，不碰手机）**——标题写成正文第一行 |
 
 另有**每日日记定时任务**（`wanwan_diary_daily`，默认 18:00）：载入人格 → 读当天素材 → 写日记 → 生成配图 → 发布 → 把链接播报给主人；
 以及**手机心跳看门狗**（`wanwan_phone_heartbeat`，每 5 分钟）：探测 adb 通道，断线 QQ 告警（30 分钟冷却）、恢复也报一声——配套手机侧 Magisk `service.d/98-keepalive.sh` 保活循环（守 5555 端口、ZT 心跳、Doze 豁免）。
@@ -73,7 +76,14 @@ git clone https://github.com/<owner>/wanwan_skills.git
   "site_timeout": 60,
 
   // 形象参考图（自拍 / 配图保持画风）
-  "ref_image": "/gsuid_core/data/wanwan/wanwan_ref.jpg"
+  "ref_image": "/gsuid_core/data/wanwan/wanwan_ref.jpg",
+
+  // 手机通道（adb over ZeroTier；刷/评/回复用）
+  "phone_serial": "10.110.0.161:5555",
+
+  // B站 Web API 登录态（bilibili_post 发动态用）：
+  // 浏览器 F12 抄整段 Cookie 写进该文件（一行，含 SESSDATA 与 bili_jct）
+  "bili_token_path": "/gsuid_core/data/wanwan/.bili_token"
 }
 ```
 

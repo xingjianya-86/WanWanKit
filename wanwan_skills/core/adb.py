@@ -8,8 +8,10 @@ from __future__ import annotations
 
 import asyncio
 import re
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
+
+from gsuid_core.logger import logger
 
 
 class AdbError(RuntimeError):
@@ -53,10 +55,52 @@ async def _run(args: list[str], timeout: float) -> tuple[int, bytes, bytes]:
     return proc.returncode or 0, out, err
 
 
+def _looks_dead(msg: str) -> bool:
+    """是「设备没了」而不是命令自身的失败。
+
+    ZT 路径轮换后旧 transport 会半死：adb devices 仍显示 device，
+    但 shell 硬超时；或快速回 device offline / not found。
+    unauthorized 不算（重连救不了，该让用户点授权）。
+    """
+    low = msg.lower()
+    return "device" in low and ("offline" in low or "not found" in low)
+
+
+async def _rebuild_transport(serial: str) -> None:
+    """断开重连，重建 adb transport（半死连接自愈）。"""
+    with suppress(AdbError):
+        await _run(["disconnect", serial], 8.0)
+    with suppress(AdbError):
+        await _run(["connect", serial], 8.0)
+    await asyncio.sleep(0.6)
+
+
 async def _serial(serial: str, args: list[str], timeout: float) -> AdbResult:
-    """跑 `adb -s <serial> <args>`。"""
-    code, out, err = await _run(["-s", serial, *args], timeout)
-    return AdbResult(code, out.decode("utf-8", "replace"), err.decode("utf-8", "replace"))
+    """跑 `adb -s <serial> <args>`，带半死连接自愈。
+
+    心跳探针每次先 adb connect 所以测不出半死状态；工具命令直接
+    `adb -s … shell` 会连环硬超时（17:38 真机复现20s超时）——
+    超时/离线时自动断开重连再重试一次，仍不行才如实报。
+    """
+    for attempt in range(2):
+        try:
+            code, out, err = await _run(["-s", serial, *args], timeout)
+        except AdbError as exc:
+            if "未安装" in str(exc) or attempt == 1:
+                raise
+            logger.warning(f"[wanwan] adb 超时，自动重连后重试: adb -s {serial} {' '.join(args[:3])}")
+            await _rebuild_transport(serial)
+            continue
+
+        text = (out + err).decode("utf-8", "replace")
+        if _looks_dead(text):
+            if attempt == 1:
+                return AdbResult(code, out.decode("utf-8", "replace"), err.decode("utf-8", "replace"))
+            logger.warning(f"[wanwan] adb 设备离线，自动重连后重试: adb -s {serial} {' '.join(args[:3])}")
+            await _rebuild_transport(serial)
+            continue
+        return AdbResult(code, out.decode("utf-8", "replace"), err.decode("utf-8", "replace"))
+    raise AdbError("adb 自愈重试后仍失败（不应到达）")  # noqa: TRY301 —— 循环内必 return/raise
 
 
 async def ensure_connected(serial: str, timeout: float = 25.0) -> None:

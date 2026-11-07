@@ -418,6 +418,22 @@ class TestPhone:
         assert not _looks_like_hint("真好看")  # 短内容但不是提示语
 
 
+class TestAdbSelfHeal:
+    """半死连接自愈：心跳探针测不出这种状态，工具命令会连环硬超时。"""
+
+    def test_looks_dead_only_device_level(self) -> None:
+        from wanwan_skills.core.adb import _looks_dead
+
+        # 半死/掉线：该触发 断开重连+重试
+        assert _looks_dead("adb: device '10.110.0.161:5555' not found")
+        assert _looks_dead("error: device offline")
+        # 命令自身的失败 ≠ 设备没了（不该白重连）
+        assert not _looks_dead("ls: /nope: No such file or directory")
+        assert not _looks_dead("dumpsys succeeded")
+        # unauthorized 重连救不了，该让用户点授权弹窗
+        assert not _looks_dead("adb: device unauthorized")
+
+
 class TestBilibiliCards:
     """推荐流卡片是 content-desc 结构化的，解析错了清单就全错。"""
 
@@ -544,6 +560,107 @@ class TestReplyTarget:
         from wanwan_skills.core.phone import find_reply_button
 
         assert find_reply_button(self._nodes(), "别人") is None
+
+
+class TestBiliApi:
+    """B站 API 移植自 legacy（2026-10-29 实测配方）：语义必须锁死。"""
+
+    def test_creds_parse_and_auth_guards(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        from wanwan_skills.core import bili_api
+
+        tok = tmp_path / "tok"
+        tok.write_text("buvid3=abc; DedeUserID=123; SESSDATA=SESS123; bili_jct=JCT456", encoding="utf-8")
+        monkeypatch.setattr(bili_api, "TOKEN_PATH", str(tok))
+        assert bili_api._creds() == ("SESS123", "JCT456")
+        assert bili_api._require_auth() == ""
+
+        # 缺文件 → 报缺失，不发请求
+        monkeypatch.setattr(bili_api, "TOKEN_PATH", str(tmp_path / "none"))
+        assert bili_api._creds() == ("", "")
+        err = bili_api._require_auth()
+        assert err.startswith("ERROR") and "登录态" in err
+
+        # 有 SESSDATA 缺 bili_jct
+        tok2 = tmp_path / "tok2"
+        tok2.write_text("SESSDATA=only", encoding="utf-8")
+        monkeypatch.setattr(bili_api, "TOKEN_PATH", str(tok2))
+        assert "bili_jct" in bili_api._require_auth()
+
+    def test_unwrap_error_semantics(self) -> None:
+        from wanwan_skills.core.bili_api import _unwrap
+
+        data, err = _unwrap(200, '{"code":0,"data":{"dyn_id_str":"987654"}}')
+        assert err == "" and data["dyn_id_str"] == "987654"
+        _, err = _unwrap(200, '{"code":-101,"message":"账号未登录"}')
+        assert "登录态过期" in err
+        _, err = _unwrap(200, '{"code":-111,"message":"csrf 校验失败"}')
+        assert "csrf" in err
+        _, err = _unwrap(200, '{"code":4100001,"message":"gw"}')
+        assert "4100001" in err
+        _, err = _unwrap(200, '{"code":4126146,"message":"标题太长了啦~"}')
+        assert "正文首行" in err
+        _, err = _unwrap(0, "connection reset")
+        assert "连不上" in err
+        _, err = _unwrap(200, "not-json<html>")
+        assert "不是 JSON" in err
+
+    def test_wbi_query_pure(self) -> None:
+        import re
+
+        from wanwan_skills.core.bili_api import _wbi_query
+
+        q = _wbi_query({"b": "2", "a": "1!'()*x"}, "MIXINKEY123", "1700000000")
+        assert "wts=1700000000" in q
+        assert "!'()*" not in q  # 危险字符被过滤
+        assert "a=1x" in q  # 过滤后剩 1x
+        assert "b=2" in q
+        # 按 key 排序：a 在 b 前
+        assert q.index("a=") < q.index("b=")
+        assert re.search(r"w_rid=[0-9a-f]{32}$", q)
+
+    def test_post_dynamic_guards_no_network(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """空正文/缺凭据必须在发请求前就拦住（不碰网络）。"""
+        from wanwan_skills.core import bili_api
+
+        tok = tmp_path / "tok"
+        tok.write_text("SESSDATA=x; bili_jct=y", encoding="utf-8")
+        monkeypatch.setattr(bili_api, "TOKEN_PATH", str(tok))
+        out = bili_api.post_dynamic("   ")
+        assert out.startswith("ERROR") and "不能为空" in out
+
+        monkeypatch.setattr(bili_api, "TOKEN_PATH", str(tmp_path / "missing"))
+        out = bili_api.post_dynamic("正文")
+        assert out.startswith("ERROR") and "登录态" in out
+
+    def test_post_tool_error_passthrough_and_dedupe(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """工具层：ERROR → ⚠️ 原样传达；成功 → ✅ 记去重、同段不重发。"""
+        import asyncio
+        from types import SimpleNamespace
+
+        from wanwan_skills.core import bili_api
+        from wanwan_skills.tools import bilibili as bl
+
+        monkeypatch.setattr(bl, "load_config", lambda: SimpleNamespace(bili_ready=True, bili_token_path="/tmp/tok"))
+        monkeypatch.setattr(bl, "_USED_POSTS", tmp_path / "used.json")
+        monkeypatch.setattr(bili_api, "set_token_path", lambda p: None)
+        # @ai_tools 包装器会读 ctx.deps.bot —— 给个最小合法 ctx
+        ctx = SimpleNamespace(deps=SimpleNamespace(bot=None, allow_user_outbound=False))
+
+        # ERROR 透传
+        monkeypatch.setattr(bili_api, "post_dynamic", lambda t: "ERROR: 登录态过期（-101），更新 SESSDATA。")
+        out = asyncio.run(bl.bilibili_post(ctx, "一段正文"))
+        assert out.startswith("⚠️") and "-101" in out
+
+        # 成功 + 去重
+        monkeypatch.setattr(bili_api, "post_dynamic", lambda t: "已发布动态 id=42  https://t.bilibili.com/42")
+        out = asyncio.run(bl.bilibili_post(ctx, "深海时间的测试动态"))
+        assert out.startswith("✅") and "t.bilibili.com/42" in out
+        out2 = asyncio.run(bl.bilibili_post(ctx, "深海时间的测试动态"))
+        assert out2.startswith("⚠️") and "已经发过" in out2
+
+        # 空正文
+        out3 = asyncio.run(bl.bilibili_post(ctx, "  "))
+        assert out3.startswith("⚠️")
 
 
 class TestDouyinJunk:
