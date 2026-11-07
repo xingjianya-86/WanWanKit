@@ -91,12 +91,33 @@ def _extract_video(nodes: list) -> _Video | None:
     return _Video(author=author, desc=desc, likes=likes or "0", comments=comments or "0")
 
 
+def _junk_reason(nodes: list) -> str:
+    """识别直播卡片 / 广告，返回原因（空串=正常内容）。
+
+    抖音广告卡片带独立「广告」标签；直播卡片有「进入直播间」按钮。
+    """
+    texts = [(n.text or n.desc).strip() for n in nodes]
+    blob = " ".join(texts)
+    if "进入直播间" in blob:
+        return "直播"
+    # 独立「广告」标签（不误伤描述里顺带提到广告的正常视频）
+    for t in texts:
+        if t in ("广告", "广告 sponsor", "赞助"):
+            return "广告"
+    return ""
+
+
 async def _ensure_douyin(serial: str) -> None:
-    """确保抖音在前台；不在则启动并等待。"""
+    """确保抖音在前台，且没有残留的评论/语音面板。
+
+    面板开着时 swipe 会滑到面板上而不是切视频——browse 必须先关。
+    """
     _, _, app = await phone.screen_state(serial)
     if app != DOUYIN_PKG:
         await phone.launch(serial, DOUYIN_PKG)
         await asyncio.sleep(6)
+        return
+    await _close_comment_panel(serial)
 
 
 async def _swipe_next(serial: str) -> None:
@@ -152,10 +173,15 @@ async def douyin_browse(
             await asyncio.sleep(1.5)
 
             seen: list[_Video] = []
+            skipped = 0
             last_raw = ""
-            for i in range(cap):
+            attempts = 0
+            max_attempts = cap * 4  # 防死循环：直播/广告连播时有上限
+            while len(seen) < cap and attempts < max_attempts:
+                attempts += 1
                 # 界面切换/加载需要时间：轮询直到读到完整信息（有描述或赞数）
                 v = None
+                nodes: list = []
                 for _ in range(3):
                     nodes = await phone.ui(serial)
                     cand = _extract_video(nodes)
@@ -163,12 +189,19 @@ async def douyin_browse(
                         v = cand
                         break
                     await asyncio.sleep(1.2)
+
+                reason = _junk_reason(nodes)
+                if reason:
+                    skipped += 1
+                    await _swipe_next(serial)
+                    continue
+
                 raw = f"{v.author}|{v.desc}" if v else ""
                 # 同一条重复读到就跳过（swipe 可能没生效）
                 if v and raw != last_raw:
                     seen.append(v)
                     last_raw = raw
-                if i < cap - 1:
+                if len(seen) < cap:
                     await _swipe_next(serial)
 
             shot = await phone.screenshot(serial, cfg, name="douyin")
@@ -180,7 +213,9 @@ async def douyin_browse(
 
     lines = [f"看了 {len(seen)} 条："]
     lines += [v.line(i + 1) for i, v in enumerate(seen)]
-    lines.append(f"\n当前停在第 {len(seen)} 条。要评论就调 douyin_comment。")
+    if skipped:
+        lines.append(f"\n（已跳过 {skipped} 条直播/广告）")
+    lines.append(f"当前停在第 {len(seen)} 条。要评论就调 douyin_comment。")
     if ctx.deps.allow_user_outbound and ctx.deps.bot is not None:
         try:
             await ctx.deps.bot.send(MessageSegment.image(shot))
@@ -248,6 +283,15 @@ async def douyin_comment(
             await asyncio.sleep(random.uniform(0.6, 1.2))
             send = await _find_send_btn(serial)
             if send is None:
+                # 一次重试：重新聚焦输入框再找（面板偶发未完全展开）
+                await phone.tap(serial, *box.center)
+                await asyncio.sleep(random.uniform(0.8, 1.2))
+                send = await _find_send_btn(serial)
+            if send is None:
+                # 留下底部控件快照，便于下次定位是哪一环断了
+                nodes = await phone.ui(serial)
+                bottom = [f"y={n.y1},{(n.text or n.desc).strip()[:12]!r}" for n in nodes if n.y1 >= 2100][:12]
+                logger.warning(f"[wanwan] 发送按钮未找到，底部控件: {bottom}")
                 return "⚠️ 没找到发送按钮，评论可能未发出"
             await phone.tap(serial, *send.center)
             await asyncio.sleep(random.uniform(1.0, 1.8))

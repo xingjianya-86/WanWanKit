@@ -342,6 +342,53 @@ class TestPhone:
             assert bad not in _ACTIONS
 
 
+class TestDouyinJunk:
+    """直播 / 广告卡片必须被识别跳过。"""
+
+    @staticmethod
+    def _nodes(items: list[tuple[str, bool]]):
+        """items = [(text, clickable), ...]，按真实控件树布局。"""
+        from wanwan_skills.core.phone import UINode
+
+        return [UINode(text=t, desc="", cls="T", clickable=c, x1=0, y1=0, x2=10, y2=10) for t, c in items]
+
+    def test_live_card_detected(self) -> None:
+        from wanwan_skills.tools.douyin import _junk_reason
+
+        nodes = self._nodes([("点击进入直播间按钮", True), ("@某主播", True)])
+        assert _junk_reason(nodes) == "直播"
+
+    def test_ad_label_detected(self) -> None:
+        from wanwan_skills.tools.douyin import _junk_reason
+
+        nodes = self._nodes([("广告", False), ("@游戏碎碎念", True)])
+        assert _junk_reason(nodes) == "广告"
+
+    def test_normal_video_not_flagged(self) -> None:
+        from wanwan_skills.tools.douyin import _junk_reason
+
+        # 描述里顺带提到「广告」的正常视频不应被误伤
+        nodes = self._nodes([("2026年超好玩的小游戏，不是广告", False), ("@某作者", True), ("喜欢8.7万", False)])
+        assert _junk_reason(nodes) == ""
+
+    def test_extract_video_from_real_layout(self) -> None:
+        from wanwan_skills.tools.douyin import _extract_video
+
+        v = _extract_video(
+            self._nodes(
+                [
+                    ("广告", False),
+                    ("@游戏碎碎念", True),
+                    ("2026年超好玩的小游戏! 广告", False),
+                    ("喜欢9，按钮", True),
+                ]
+            )
+        )
+        assert v is not None
+        assert v.author == "游戏碎碎念"
+        assert v.likes == "9"
+
+
 class TestTaskPrompt:
     """任务 prompt 用 .format(today=...)，花括号写错会直接 KeyError。"""
 

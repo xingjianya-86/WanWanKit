@@ -202,7 +202,8 @@ async def type_text(serial: str, text: str) -> bool:
         )
         await _async_sleep(1.2)
         nodes = await ui(serial)
-        if any(text[:6] in n.text for n in nodes):
+        # 只认输入框区域（y>=2000）的上屏结果：别处出现同字属误判
+        if any(text[:6] in n.text and n.y1 >= 2000 for n in nodes):
             return True
     return False
 
