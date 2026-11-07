@@ -816,3 +816,123 @@ class TestHeartbeat:
         assert not _should_alert(now=1060.0, last_alert=1000.0, down=True)
         # 冷却过了：复报（长期失联要持续提醒）
         assert _should_alert(now=1000.0 + _ALERT_COOLDOWN + 1, last_alert=1000.0, down=True)
+
+
+class TestDouyinPost:
+    """抖音网页发布：驱动子进程的输出语义 + 工具护栏（不碰真浏览器）。"""
+
+    def test_interpret_error_and_login(self) -> None:
+        from wanwan_skills.tools.douyin import _dy_interpret
+
+        # ERROR 行透传
+        ok, msg = _dy_interpret(1, "ERROR: 标题超长\n", "")
+        assert not ok and "标题超长" in msg
+        # 未登录（无 ERROR 前缀也要当失败）
+        ok, msg = _dy_interpret(0, "未登录：cookie 已失效\n", "")
+        assert not ok and "未登录" in msg
+        # 成功：连带管理页链接一起带出
+        ok, msg = _dy_interpret(
+            0,
+            "已发布抖音（仅自己可见）：测试片\n管理页：https://creator.douyin.com/x\n",
+            "",
+        )
+        assert ok and "测试片" in msg and "creator.douyin.com" in msg
+        # 非零退出且无输出：报「未确认」，附 stderr 尾巴
+        ok, msg = _dy_interpret(1, "", "TimeoutError: browser\nline2")
+        assert not ok and "发布未确认" in msg and "browser" in msg
+
+    def test_dy_run_missing_env_no_spawn(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """环境缺文件时直接 ERROR，不尝试拉起浏览器。"""
+        import asyncio
+
+        from wanwan_skills.tools import douyin as dy
+
+        monkeypatch.setattr(dy, "_DY_VENV_PY", "/no/such/python")
+        monkeypatch.setattr(dy, "_DY_DRIVER", "/no/such/driver.py")
+        rc, out, _ = asyncio.run(dy._dy_run(("check",)))
+        assert rc == 127 and out.startswith("ERROR") and "发布环境" in out
+
+    def test_post_guards(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """标题/白名单/文件/去重——全部在起子进程前拦住。"""
+        import asyncio
+        from types import SimpleNamespace
+
+        from wanwan_skills.tools import douyin as dy
+
+        out_dir = tmp_path / "video_out"
+        out_dir.mkdir()
+        vid = out_dir / "a.mp4"
+        vid.write_bytes(b"\x00")
+        monkeypatch.setattr(dy, "_VIDEO_OUT", out_dir)
+        monkeypatch.setattr(dy, "_USED_POSTS", tmp_path / "used.json")
+        monkeypatch.setattr(dy, "load_config", lambda: SimpleNamespace())
+        ctx = SimpleNamespace(deps=SimpleNamespace(bot=None, allow_user_outbound=False))
+
+        # 子进程绝不能被拉起来
+        async def _boom(_args: tuple[str, ...]) -> tuple[int, str, str]:
+            raise AssertionError("护栏失效：不该起子进程")
+
+        monkeypatch.setattr(dy, "_dy_run", _boom)
+
+        # 空标题 / 超长标题
+        out = asyncio.run(dy.douyin_post(ctx, str(vid), "  "))
+        assert out.startswith("⚠️") and "title" in out
+        out = asyncio.run(dy.douyin_post(ctx, str(vid), "字" * 41))
+        assert out.startswith("⚠️") and "超长" in out
+        # 相对路径 / 白名单外 / 文件不存在
+        out = asyncio.run(dy.douyin_post(ctx, "a.mp4", "标题"))
+        assert out.startswith("⚠️") and "绝对路径" in out
+        outside = tmp_path / "evil.mp4"
+        outside.write_bytes(b"\x00")
+        out = asyncio.run(dy.douyin_post(ctx, str(outside), "标题"))
+        assert out.startswith("⚠️") and "白名单" in out
+        out = asyncio.run(dy.douyin_post(ctx, str(out_dir / "missing.mp4"), "标题"))
+        assert out.startswith("⚠️") and "不存在" in out
+
+    def test_post_success_dedupe_and_error_passthrough(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        import asyncio
+        from types import SimpleNamespace
+
+        from wanwan_skills.tools import douyin as dy
+
+        out_dir = tmp_path / "video_out"
+        out_dir.mkdir()
+        vid = out_dir / "a.mp4"
+        vid.write_bytes(b"\x00")
+        monkeypatch.setattr(dy, "_VIDEO_OUT", out_dir)
+        monkeypatch.setattr(dy, "_USED_POSTS", tmp_path / "used.json")
+        monkeypatch.setattr(dy, "load_config", lambda: SimpleNamespace())
+        ctx = SimpleNamespace(deps=SimpleNamespace(bot=None, allow_user_outbound=False))
+
+        seen: list[tuple[str, ...]] = []
+
+        async def _ok(args: tuple[str, ...]) -> tuple[int, str, str]:
+            seen.append(args)
+            return 0, "已发布抖音：海洋观察日记\n", ""
+
+        monkeypatch.setattr(dy, "_dy_run", _ok)
+        out = asyncio.run(dy.douyin_post(ctx, str(vid), "海洋观察日记", desc="今天潮位刚好", private=True))
+        assert out.startswith("✅") and "海洋观察日记" in out
+        # 参数透传：upload 文件 标题 简介 tags 私密标记
+        assert seen[0][0] == "upload" and seen[0][2] == "海洋观察日记" and seen[0][5] == "1"
+
+        # 同标题去重：不再起子进程
+        out2 = asyncio.run(dy.douyin_post(ctx, str(vid), "海洋观察日记"))
+        assert out2.startswith("⚠️") and "已经发过" in out2
+        assert len(seen) == 1
+
+        # ERROR → ⚠️ 原样传达（不记去重，修好后可重发）
+        async def _err(_args: tuple[str, ...]) -> tuple[int, str, str]:
+            return 1, "ERROR: 被风控拦截，请稍后再试\n", ""
+
+        monkeypatch.setattr(dy, "_dy_run", _err)
+        out3 = asyncio.run(dy.douyin_post(ctx, str(vid), "换个标题"))
+        assert out3.startswith("⚠️") and "风控" in out3
+
+        # 未登录 → 给出扫码指引
+        async def _nologin(_args: tuple[str, ...]) -> tuple[int, str, str]:
+            return 0, "未登录：请先扫码\n", ""
+
+        monkeypatch.setattr(dy, "_dy_run", _nologin)
+        out4 = asyncio.run(dy.douyin_post(ctx, str(vid), "再换个标题"))
+        assert out4.startswith("⚠️") and "扫码" in out4

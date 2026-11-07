@@ -640,3 +640,140 @@ async def _find_send_btn(serial: str) -> tuple[int, int] | None:
         picked = min(parents, key=lambda p: (p.x2 - p.x1) * (p.y2 - p.y1))
         return picked.center
     return n.center
+
+
+# ---- 网页发布（legacy douyin_uploader 经 venv 子进程驱动，与主 venv 隔离）----
+# 走创作者中心网页而非手机 UI：表单字段全是参数，没有焦点/dump/坐标问题。
+_DY_VENV_PY = "/gsuid_core/data/douyin_venv/bin/python"
+_DY_DRIVER = "/gsuid_core/data/mcp/dy_driver.py"
+_VIDEO_OUT = Path("/gsuid_core/data/video_out")  # 上传白名单（legacy 同款限制）
+_USED_POSTS = Path("/gsuid_core/data/wanwan/.douyin_post_used.json")
+_TITLE_LIMIT = 40  # 抖音标题上限（超了上传器也会拒）
+_POST_TIMEOUT = 560.0  # 工具预算 600s，留 40s 收尾
+
+
+def _used_posts() -> list[str]:
+    return list(_load_json(_USED_POSTS).get("used", []))
+
+
+def _mark_post_used(title: str) -> None:
+    used = _used_posts()
+    used.append(title)
+    # 只留最近 100 条，防止无限增长
+    _save_json(_USED_POSTS, {"used": used[-100:]})
+
+
+async def _dy_run(args: tuple[str, ...]) -> tuple[int, str, str]:
+    """在 douyin_venv 里跑一次驱动脚本，返回 (rc, stdout, stderr 尾巴)。
+
+    环境变量交给 legacy 模块自己纠正（它加载即设 PLAYWRIGHT_BROWSERS_PATH
+    并清代理）；超时杀进程——发布状态未知时不返回中间态让模型乱猜。
+    """
+    if not (Path(_DY_VENV_PY).is_file() and Path(_DY_DRIVER).is_file()):
+        return 127, "ERROR: 缺少抖音发布环境（douyin_venv 或 dy_driver.py）", ""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            _DY_VENV_PY,
+            _DY_DRIVER,
+            *args,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    except OSError as exc:
+        return 127, f"ERROR: 起不了发布子进程：{exc}", ""
+    try:
+        out_b, err_b = await asyncio.wait_for(proc.communicate(), timeout=_POST_TIMEOUT)
+    except TimeoutError:
+        proc.kill()
+        try:
+            await asyncio.wait_for(proc.communicate(), timeout=15)
+        except TimeoutError:  # noqa: PERF203 —— 兜底里的兜底
+            pass
+        return 124, "ERROR: 上传超时（>560s），发布状态未知——别直接重发，先查创作者中心", ""
+    stdout = out_b.decode("utf-8", "replace") if out_b else ""
+    stderr = err_b.decode("utf-8", "replace") if err_b else ""
+    err_tail = "\n".join(stderr.strip().splitlines()[-12:])
+    return proc.returncode if proc.returncode is not None else 1, stdout, err_tail
+
+
+def _dy_interpret(rc: int, stdout: str, err_tail: str) -> tuple[bool, str]:
+    """把驱动输出翻成 (成功?, 给主人的一行)。ERROR/未登录一律当失败。"""
+    lines = [ln.strip() for ln in stdout.splitlines() if ln.strip()]
+    bad = next((ln for ln in lines if ln.startswith("ERROR") or "未登录" in ln), "")
+    if bad:
+        return False, bad
+    ok_at = next((i for i, ln in enumerate(lines) if "已发布抖音" in ln), -1)
+    if ok_at >= 0:
+        return True, " ".join(lines[ok_at:])
+    if rc == 0 and lines:
+        return True, lines[-1]
+    detail = err_tail or (lines[-1] if lines else "")
+    return False, f"发布未确认（rc={rc}）：{detail[:300]}"
+
+
+@ai_tools(
+    category="common",
+    capability_domain=_CAP_DOMAIN,
+    covers=_COVERS,
+    code_callable=False,
+    timeout=600.0,
+)
+async def douyin_post(
+    ctx: RunContext[ToolContext],
+    video: str,
+    title: str,
+    desc: str = "",
+    tags: str = "",
+    private: bool = False,
+) -> str:
+    """用主人账号发布一条**抖音视频作品**（走创作者中心网页，不操作手机）。
+
+    只发主人确认过的标题/简介——本工具不代写。视频必须已在 video_out
+    目录（先由视频生成产出）；同一个标题不重复发；失败原样返回原因
+    （未登录/超时），不会硬闯。上传成功后到创作者中心可见。
+
+    Args:
+        video: 视频文件绝对路径（须在 /gsuid_core/data/video_out 下）。
+        title: 作品标题（≤40 字，超长会被平台拒）。
+        desc: 简介文案，可空。
+        tags: 话题标签，逗号分隔，可空。
+        private: true = 仅自己可见（测试用）；正式发布保持 false。
+    """
+    cfg = load_config()
+    if cfg is None:
+        return "⚠️ wanwan_skills 未配置（缺 plugins_configs/wanwan_skills.json）"
+
+    title_c = (title or "").strip()
+    if not title_c:
+        return "⚠️ 请提供 title（作品标题）"
+    if len(title_c) > _TITLE_LIMIT:
+        return f"⚠️ 标题超长（{len(title_c)} > {_TITLE_LIMIT} 字），请精简后再发"
+
+    vpath = Path((video or "").strip())
+    if not str(vpath).strip() or not vpath.is_absolute():
+        return "⚠️ 请提供 video 的绝对路径（用 video_out 目录里的文件）"
+    try:
+        vpath.resolve().relative_to(_VIDEO_OUT.resolve())
+    except (ValueError, OSError):
+        return f"⚠️ 只发 {_VIDEO_OUT} 目录里的视频（白名单外不上传）"
+    if not vpath.is_file():
+        return f"⚠️ 视频文件不存在：{vpath}"
+    if vpath.suffix.lower() not in (".mp4", ".mov", ".mkv", ".avi"):
+        return "⚠️ 只支持 mp4 / mov / mkv / avi 视频"
+
+    if title_c in _used_posts():
+        return "⚠️ 这个标题的作品已经发过了，换一个"
+
+    rc, stdout, err_tail = await _dy_run(
+        ("upload", str(vpath), title_c, (desc or "").strip(), (tags or "").strip(), "1" if private else "0")
+    )
+    ok, msg = _dy_interpret(rc, stdout, err_tail)
+    if not ok:
+        logger.warning(f"[wanwan] 抖音发布失败 rc={rc}: {msg[:120]} | {err_tail[:200]}")
+        if "未登录" in msg:
+            return "⚠️ 抖音登录态失效（cookie 过期），需要重新扫码登录后才能发"
+        return "⚠️ " + msg.removeprefix("ERROR").lstrip(": ").strip()
+
+    _mark_post_used(title_c)
+    logger.info(f"[wanwan] 抖音作品已发：{title_c}")
+    return f"✅ {msg}"

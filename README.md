@@ -18,6 +18,7 @@
 | `phone_look` / `phone_do` | 看 / 操作手机（点、滑、输入、开关应用等白名单动作） |
 | `douyin_browse` / `douyin_comment` | 刷抖音 / 给**当前这条**发评论（自动跳过直播广告；全程不滑走视频；刷完评完自动锁屏收手机） |
 | `douyin_reply` | 回复抖音评论区某条（按作者/内容锚定，保留「回复 @作者」归属前缀） |
+| `douyin_post` | **发布抖音视频作品（创作者中心网页，不碰手机）**——只发 `data/video_out/` 白名单里的视频，标题 ≤40 字，同标题不重发 |
 | `bilibili_browse` / `bilibili_comment` | 刷B站推荐 / 给**当前这条**发评论（同上；广告/会员购卡自动跳过） |
 | `bilibili_reply` | 回复B站评论区某条（锚定逻辑同上） |
 | `bilibili_post` | **发布B站文字动态（走 Web API，不碰手机）**——标题写成正文第一行 |
