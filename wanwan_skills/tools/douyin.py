@@ -7,7 +7,6 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
 import random
 import re
@@ -128,28 +127,6 @@ async def _ensure_douyin(serial: str) -> None:
     await _close_comment_panel(serial)
 
 
-async def _phone_put_away(serial: str) -> None:
-    """收手机：锁屏（息屏即收，别亮着屏耗电）。
-
-    **不杀进程**——重开要能精确恢复到刚看的那条；杀进程会让 Douyin
-    重新落到别的视频上，评论就落错条（实测发生过）。
-    """
-    try:
-        await phone.lock(serial)
-        logger.info("[wanwan] 收手机：已锁屏（抖音留后台，重开恢复原位）")
-    except adb.AdbError as exc:
-        logger.warning(f"[wanwan] 收手机失败: {exc}")
-
-
-@contextlib.asynccontextmanager
-async def _put_away_on_exit(serial: str):
-    """with 块退出时收手机（成功、失败、异常都收）。"""
-    try:
-        yield
-    finally:
-        await _phone_put_away(serial)
-
-
 async def _swipe_next(serial: str) -> None:
     """上滑切下一条。"""
     w, h = await phone.screen_size(serial)
@@ -236,7 +213,7 @@ async def douyin_browse(
 
             shot = await phone.screenshot(serial, cfg, name="douyin")
             # 刷完收手机：锁屏（抖音留后台，重开恢复到这条）
-            await _phone_put_away(serial)
+            await phone.put_away(serial)
     except adb.AdbError as exc:
         return f"⚠️ {exc}"
 
@@ -288,7 +265,7 @@ async def douyin_comment(
         return "⚠️ 这句话已经评论过了，换一句"
 
     try:
-        async with adb.device(serial), _put_away_on_exit(serial):
+        async with adb.device(serial), phone.put_away_on_exit(serial):
             await _ensure_douyin(serial)
             await asyncio.sleep(1.0)
 
@@ -334,7 +311,7 @@ async def douyin_comment(
             cleared = False
             for _ in range(6):
                 await asyncio.sleep(1.5)
-                if await _input_cleared(serial, clean):
+                if await phone.input_cleared(serial, clean):
                     cleared = True
                     break
             if not cleared:
@@ -356,24 +333,6 @@ async def douyin_comment(
         except Exception:  # noqa: BLE001 —— 截图发不出不影响评论结果
             pass
     return f"✅ 评论已发送：{clean}"
-
-
-async def _input_cleared(serial: str, text: str) -> bool:
-    """输入框是否已清空（发送成功的唯一标志）。
-
-    关键：dump 失败时 ui() 会**静默返回空列表**，那不是「清空了」——
-    必须重试；耗尽仍拿不到控件树就保守当作「没清空」，
-    宁可多等也绝不能假报「已发送」。
-    文字位置用 phone.is_input_node 认（键盘打开时在 y≈934，不是固定 y≥2170）；
-    评论列表里的同文节点不算输入框（发出去之后它出现在列表里是正常的）。
-    """
-    for i in range(3):
-        nodes = await phone.ui(serial)
-        if nodes:
-            return not any(text[:6] in n.text and phone.is_input_node(n) for n in nodes)
-        await asyncio.sleep(0.6 + i * 0.5)
-    logger.warning("[wanwan] uiautomator dump 连续失败，按「未清空」保守处理")
-    return False
 
 
 async def _locate_send_stable(serial: str, tries: int = 4) -> tuple[int, int] | None:

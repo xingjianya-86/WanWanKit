@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import re
 import time
 import xml.etree.ElementTree as ET
@@ -53,17 +54,20 @@ class UINode:
 
 
 def is_input_node(n: UINode) -> bool:
-    """dump 里的「评论输入框文字」节点。
+    """dump 里的「输入框文字」节点。
 
-    输入框位置会变：键盘/表情面板打开时在 y≈934（贴左缘的宽框），
-    关着时在底部 y≥2170（还可能带一份 y≈2205 的残留副本）。
-    按固定 y 过滤会漏判——漏判会引发两处错误：
-    type_text 误以为没上屏而重播（文字翻倍）、_input_cleared 误判已清空。
-    评论列表节点 x1≥120、视频简介在 y≈1550，都能被这两条排除。
+    位置随 App/键盘状态变：抖音键盘开 y≈934、B站展开 y≈1992、
+    底部条 y≥2170——按固定 y 过滤会漏判，漏判会让 type_text 重播
+    （文字翻倍）、_input_cleared 误判。共同形态是**贴左缘的宽框**
+    （x1≤60 且宽≥900）加两个纵向带；评论列表从 x1≈120 起被排除，
+    视频简介在 y≈1550 不在带内（模型爱照抄简介，误判会把发成功的
+    评论当成还留在输入框）。
     """
     if n.y1 >= 2170:
         return True
-    return n.y1 < 1150 and n.x1 <= 60 and (n.x2 - n.x1) >= 900
+    if not (n.x1 <= 60 and (n.x2 - n.x1) >= 900):
+        return False
+    return n.y1 < 1150 or 1900 <= n.y1 <= 2150
 
 
 async def screen_size(serial: str) -> tuple[int, int]:
@@ -238,6 +242,42 @@ async def type_text(serial: str, text: str) -> bool:
                 return False
         # dump 正常但确实没上屏 → 真没播进去，才允许重播
     return False
+
+
+async def input_cleared(serial: str, text: str) -> bool:
+    """输入框是否已清空（发送成功的唯一标志）。
+
+    dump 失败时 ui() 会**静默返回空列表**，那不是「清空了」——
+    必须重试；耗尽仍拿不到控件树就保守当作「没清空」，
+    宁可多等也绝不能假报「已发送」。
+    文字位置用 is_input_node 认（位置随 App/键盘状态变，不是固定 y）；
+    评论列表里的同文节点不算输入框（发出去之后它出现在列表里是正常的）。
+    """
+    for i in range(3):
+        nodes = await ui(serial)
+        if nodes:
+            return not any(text[:6] in n.text and is_input_node(n) for n in nodes)
+        await asyncio.sleep(0.6 + i * 0.5)
+    logger.warning("[wanwan] uiautomator dump 连续失败，按「未清空」保守处理")
+    return False
+
+
+async def put_away(serial: str) -> None:
+    """收手机：锁屏（息屏即收，App 留后台保状态，重开恢复原位）。"""
+    try:
+        await lock(serial)
+        logger.info("[wanwan] 收手机：已锁屏（App 留后台，重开恢复原位）")
+    except adb.AdbError as exc:
+        logger.warning(f"[wanwan] 收手机失败: {exc}")
+
+
+@contextlib.asynccontextmanager
+async def put_away_on_exit(serial: str):
+    """with 块退出时收手机（成功、失败、异常都收）。"""
+    try:
+        yield
+    finally:
+        await put_away(serial)
 
 
 async def launch(serial: str, package: str) -> None:

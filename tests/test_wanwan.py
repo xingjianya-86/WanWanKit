@@ -383,10 +383,72 @@ class TestPhone:
         assert is_input_node(node(55, 2205, 590, 2210))
         # dump 里的 2px 残留副本（在底部条区域）
         assert is_input_node(node(953, 2208, 1017, 2210))
+        # B站没有可见键盘，展开输入区在 y≈1992
+        assert is_input_node(node(30, 1992, 1010, 2133))
         # 评论列表节点从 x1≈120 起，不算输入框
         assert not is_input_node(node(150, 700, 1040, 850))
-        # 视频简介在 y≈1550，不算
+        # B站评论列表 x1≈140
+        assert not is_input_node(node(140, 1889, 1050, 2009))
+        # 视频简介在 y≈1550（模型爱照抄简介，误判会把发成功的评论当成没发）
         assert not is_input_node(node(30, 1550, 950, 1750))
+
+
+class TestBilibiliCards:
+    """推荐流卡片是 content-desc 结构化的，解析错了清单就全错。"""
+
+    def test_parse_video_card(self) -> None:
+        from wanwan_skills.tools.bilibili import _parse_card
+
+        c = _parse_card("竖版视频,三份系统安全组件逆向 systemhelper,1.2万观看,-弹幕,时长2:09,UP主某甲")
+        assert c is not None
+        assert c.title == "三份系统安全组件逆向 systemhelper"
+        assert c.views == "1.2万"
+        assert c.up == "某甲"
+        assert c.danmaku == "-"
+
+    def test_parse_title_with_comma(self) -> None:
+        """标题里带逗号不能截断（用第一个统计段当边界）。"""
+        from wanwan_skills.tools.bilibili import _parse_card
+
+        c = _parse_card("竖版视频,看好了,这波在大气层,99观看,5弹幕,时长0:30,UP主乙")
+        assert c is not None
+        assert c.title == "看好了,这波在大气层"
+        assert c.views == "99"
+
+    def test_parse_without_stats(self) -> None:
+        from wanwan_skills.tools.bilibili import _parse_card
+
+        c = _parse_card("竖版视频,某个没统计的标题")
+        assert c is not None
+        assert c.title == "某个没统计的标题"
+        assert c.views == ""
+
+    def test_junk_cards_rejected(self) -> None:
+        """广告/会员购卡不是视频，绝不能点开当评论目标。"""
+        from wanwan_skills.tools.bilibili import _parse_card
+
+        assert _parse_card("创作推广,降到一千多的旗舰机小米14,,轻点两下查看详情") is None
+        assert _parse_card("会员购,（T）崩坏星穹铁道,,轻点两下查看详情") is None
+        assert _parse_card("竖版视频") is None
+
+    def test_state_detection(self) -> None:
+        from wanwan_skills.core.phone import UINode
+        from wanwan_skills.tools.bilibili import _find_input, _on_video_page, _sheet_open
+
+        def node(text: str, *, x1: int, y1: int, cls: str = "TextView", clickable: bool = True) -> UINode:
+            return UINode(text=text, desc="", cls=cls, clickable=clickable, x1=x1, y1=y1, x2=x1 + 300, y2=y1 + 60)
+
+        # 视频页：右侧操作栏
+        assert _on_video_page([node("点赞", x1=939, y1=1247)])
+        assert not _on_video_page([node("推荐,7之2,标签", x1=140, y1=200)])
+        # 评论面板：标题或输入框占位符
+        assert _sheet_open([node("评论（3270）", x1=170, y1=854)])
+        assert _sheet_open([node("评论千万条，等你发一条", x1=30, y1=2207, cls="EditText")])
+        assert not _sheet_open([node("点赞", x1=939, y1=1247)])
+        # 输入框定位
+        box = node("评论千万条，等你发一条", x1=30, y1=2207, cls="EditText")
+        assert _find_input([box]) is box
+        assert _find_input([node("搜索", x1=178, y1=102, cls="EditText")]) is None
 
 
 class TestDouyinJunk:

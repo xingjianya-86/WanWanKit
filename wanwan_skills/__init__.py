@@ -10,6 +10,7 @@ Plugins(
 # 导入即注册 @ai_tools / @on_core_start。放在 Plugins() 之后是有意为之：
 # 先声明插件元数据，再触发各模块的注册副作用，勿移动到文件顶部。
 from . import tasks as _tasks  # noqa: E402, F401
+from .tools import bilibili as _bilibili  # noqa: E402, F401
 from .tools import diary as _diary  # noqa: E402, F401
 from .tools import douyin as _douyin  # noqa: E402, F401
 from .tools import media as _media  # noqa: E402, F401

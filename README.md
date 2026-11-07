@@ -1,6 +1,6 @@
 # wanwan_skills
 
-给 GsCore 人格用的一组**日记 / 配图 / 语音**技能插件：每天定时写日记、生成配图、发布到手帐站点，并把链接播报给主人。
+给 GsCore 人格用的一组**日记 / 配图 / 语音 / 手机自动化**技能插件：每天定时写日记、生成配图、发布到手帐站点并播报；通过手机（adb over ZeroTier）刷抖音、刷 B 站、给当前视频发评论。
 
 ![ICON](ICON.png)
 
@@ -10,13 +10,17 @@
 |------|------|
 | `diary_write` | 写日记到 `data/wanwan/diary/YYYY-MM-DD.md`，同一天多次写会追加 |
 | `diary_illustrate` | 生成配图（带参考图保持画风）→ 转存站点 → 返回站点 URL，同时发到对话 |
-| `diary_publish` | 把某天日记发布到手帐站点（公开），支持配图 |
+| `diary_publish` | 把某天日记发布到手帐站点（公开），支持配图；同日期同内容自动去重 |
 | `diary_upload_image` | 把外链图片转存到站点，返回可用于配图的 URL |
 | `diary_read` | 读本地日记（指定日期，或最近 N 篇） |
 | `selfie_generate` | 用参考图生成人物自拍并发出 |
 | `voice_say` | 用克隆音色把短句读成语音条发出 |
+| `phone_look` / `phone_do` | 看 / 操作手机（点、滑、输入、开关应用等白名单动作） |
+| `douyin_browse` / `douyin_comment` | 刷抖音 / 给**当前这条**发评论（自动跳过直播广告；全程不滑走视频；刷完评完自动锁屏收手机） |
+| `bilibili_browse` / `bilibili_comment` | 刷B站推荐 / 给**当前这条**发评论（同上；广告/会员购卡自动跳过） |
 
-另有**每日日记定时任务**（`wanwan_diary_daily`，默认 18:00）：载入人格 → 读当天素材 → 写日记 → 生成配图 → 发布 → 把链接播报给主人。
+另有**每日日记定时任务**（`wanwan_diary_daily`，默认 18:00）：载入人格 → 读当天素材 → 写日记 → 生成配图 → 发布 → 把链接播报给主人；
+以及**手机心跳看门狗**（`wanwan_phone_heartbeat`，每 5 分钟）：探测 adb 通道，断线 QQ 告警（30 分钟冷却）、恢复也报一声——配套手机侧 Magisk `service.d/98-keepalive.sh` 保活循环（守 5555 端口、ZT 心跳、Doze 豁免）。
 
 ## 安装
 
