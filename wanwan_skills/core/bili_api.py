@@ -16,12 +16,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import random
 import re
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
 
@@ -242,14 +244,20 @@ def _unwrap(status: int, body: str) -> tuple[dict | None, str]:
     return None, f"ERROR: B站返回 code={code}：{_brief(msg, 80)}"
 
 
-def post_dynamic(text: str) -> str:
-    """发布一条文字动态。成功返回 id 与链接；失败返回 ERROR 开头原因。"""
+def post_dynamic(text: str, images: list[dict[str, object]] | None = None) -> str:
+    """发布一条动态（可带图 → 图文动态）。成功返回 id 与链接；失败返回 ERROR 开头原因。
+
+    images 为 upload_dynamic_image 返回的信息列表（最多 9 张）；纯文字传 None。
+    """
     auth_err = _require_auth()
     if auth_err:
         return auth_err
     text = (text or "").strip()
-    if not text:
-        return "ERROR: 动态正文不能为空。"
+    pics = list(images or [])
+    if not text and not pics:
+        return "ERROR: 动态正文不能为空（或至少带一张图）。"
+    if len(pics) > 9:
+        return "ERROR: 图文动态最多 9 张图。"
     _, jct = _creds()
     # upload_id 形如 {uid}_{unix秒}_{随机4位}（浏览器实测格式），uid 从 Cookie 取
     uid = ""
@@ -268,21 +276,23 @@ def post_dynamic(text: str) -> str:
     )
     if err:
         return err
-    payload = {
-        "dyn_req": {
-            "content": {
-                "contents": [{"raw_text": text, "type": 1, "biz_id": ""}],
-                # title 恒空：塞全文会在正文>约40字时 4126146（2026-10-29 实测）；
-                # 页面不展示该字段，标题由正文首行承担。
-                "title": "",
-            },
-            "scene": 2,
-            "attach_card": None,
-            "upload_id": upload_id,
-            "meta": {"app_meta": {"from": "create.dynamic.web", "mobi_app": "web"}},
-            "option": {"aigc": 2},
-        }
+    dyn_req: dict[str, object] = {
+        "content": {
+            "contents": [{"raw_text": text, "type": 1, "biz_id": ""}] if text else [],
+            # title 恒空：塞全文会在正文>约40字时 4126146（2026-10-29 实测）；
+            # 页面不展示该字段，标题由正文首行承担。
+            "title": "",
+        },
+        "scene": 2,
+        "attach_card": None,
+        "upload_id": upload_id,
+        "meta": {"app_meta": {"from": "create.dynamic.web", "mobi_app": "web"}},
+        "option": {"aigc": 2},
     }
+    if pics:
+        # 图片只进 pics 数组（contents 的 type=2 是 @用户，不是图——2026-11-08 查证）
+        dyn_req["pics"] = pics
+    payload = {"dyn_req": dyn_req}
     status, body = _post_json("https://api.bilibili.com/x/dynamic/feed/create/dyn?" + query, payload)
     data, err = _unwrap(status, body)
     if err:
@@ -294,7 +304,73 @@ def post_dynamic(text: str) -> str:
             dyn_id = data["dyn"].get("id_str") or data["dyn"].get("id")
     if not dyn_id:
         return f"ERROR: 发布响应缺动态 id：{_brief(body, 160)}"
-    return f"已发布动态 id={dyn_id}  https://t.bilibili.com/{dyn_id}"
+    kind = "图文动态" if pics else "动态"
+    return f"已发布{kind} id={dyn_id}  https://t.bilibili.com/{dyn_id}"
+
+
+def _multipart(
+    fields: dict[str, str],
+    files: list[tuple[str, str, bytes, str]],
+) -> tuple[bytes, str]:
+    """手搓 multipart/form-data（urllib 无现成辅助），返回 (body, boundary)。"""
+    boundary = "----wanwan" + uuid.uuid4().hex
+    chunks: list[bytes] = []
+    for k, v in fields.items():
+        chunks.append(f'--{boundary}\r\nContent-Disposition: form-data; name="{k}"\r\n\r\n{v}\r\n'.encode())
+    for name, filename, data, mime in files:
+        head = (
+            f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"; '
+            f'filename="{filename}"\r\nContent-Type: {mime}\r\n\r\n'
+        )
+        chunks.append(head.encode("utf-8") + data + b"\r\n")
+    chunks.append(f"--{boundary}--\r\n".encode())
+    return b"".join(chunks), boundary
+
+
+def upload_dynamic_image(data: bytes, filename: str = "wanwan.jpg") -> tuple[dict | None, str]:
+    """上传图文动态图片（draw/upload_bfs）。返回 (info, err)。
+
+    info = {"img_src", "img_width", "img_height", "img_size"}——可直接进 dyn_req.pics。
+    格式仅 jpg/png/gif；category=daily（日常动态，无 420px 下限）。
+    """
+    auth_err = _require_auth()
+    if auth_err:
+        return None, auth_err
+    if not data:
+        return None, "ERROR: 图片数据为空"
+    suffix = (filename or "").rsplit(".", 1)[-1].lower()
+    mime = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png", "gif": "image/gif"}.get(suffix)
+    if mime is None:
+        return None, f"ERROR: 图片格式仅支持 jpg/png/gif（收到 .{suffix}）"
+    _, jct = _creds()
+    body, boundary = _multipart(
+        {"category": "daily", "biz": "new_dyn", "csrf": jct},
+        [("file_up", filename, data, mime)],
+    )
+    st, resp, _h = _raw_request(
+        "https://api.bilibili.com/x/dynamic/feed/draw/upload_bfs",
+        data=body,
+        headers={
+            "User-Agent": UA,
+            "Cookie": _read_token(),
+            "Referer": "https://member.bilibili.com/",
+            "Content-Type": f"multipart/form-data; boundary={boundary}",
+        },
+        method="POST",
+        timeout=60,
+    )
+    doc, err = _unwrap(st, _b(resp))
+    if err:
+        return None, err
+    url = doc.get("image_url") if isinstance(doc, dict) else None
+    if not isinstance(url, str) or not url:
+        return None, f"ERROR: 上传成功但响应缺 image_url：{_b(resp)[:200]}"
+    return {
+        "img_src": url,
+        "img_width": int(doc.get("image_width") or 0),
+        "img_height": int(doc.get("image_height") or 0),
+        "img_size": float(doc.get("img_size") or 0),
+    }, ""
 
 
 def delete_dynamic(dyn_id: str) -> str:
@@ -312,3 +388,317 @@ def delete_dynamic(dyn_id: str) -> str:
     if err:
         return err
     return f"已删除动态 id={dyn_id}。"
+
+
+# ---------------------------------------------------------------- 视频投稿
+# 协议移植自 legacy bili_publish.py（2026-10-29 创作中心实测）：
+# 文件上传 preupload → init → 分片 PUT → complete；提交 predict 分区 → add/v3。
+
+_UPLOAD_ROOTS = ("/gsuid_core/data/video_out", "/gsuid_core/data/upload_inbox")
+
+
+def _b(body: bytes) -> str:
+    return body.decode("utf-8", "replace")
+
+
+def _raw_request(
+    url: str,
+    *,
+    data: bytes | None = None,
+    headers: dict[str, str] | None = None,
+    method: str | None = None,
+    timeout: float = 30.0,
+    attempts: int = 3,
+) -> tuple[int, bytes, dict[str, str]]:
+    """通用请求：返回 (status, body 字节, 响应头小写 dict)。
+
+    连接/超时类抖动重试；HTTP 错误状态原样返回不抛——上传协议靠
+    状态码 + body 文本判定（legacy 实测形态）。
+    """
+    req = urllib.request.Request(url, data=data, headers=headers or {}, method=method)
+    try:
+        with _open_retry(req, timeout=timeout, attempts=attempts) as resp:
+            return resp.status, resp.read(), {k.lower(): v for k, v in resp.headers.items()}
+    except urllib.error.HTTPError as exc:
+        try:
+            err_body = exc.read()
+        except OSError:
+            err_body = b""
+        return exc.code, err_body, {k.lower(): v for k, v in (exc.headers or {}).items()}
+    except Exception as exc:  # noqa: BLE001
+        return 0, f"{type(exc).__name__}: {exc}".encode("utf-8", "replace"), {}
+
+
+def resolve_video_path(p: str) -> tuple[str, str]:
+    """白名单 realpath 检查：只允许 video_out / upload_inbox 下的视频文件。"""
+    p = (p or "").strip()
+    if not p:
+        return "", "ERROR: 视频路径不能为空"
+    rp = os.path.realpath(p)
+    if not any(rp == root or rp.startswith(root + "/") for root in _UPLOAD_ROOTS):
+        return "", "ERROR: 只允许上传 {} 下的视频".format(" / ".join(_UPLOAD_ROOTS))
+    if not os.path.isfile(rp):
+        return "", f"ERROR: 文件不存在：{rp}"
+    if os.path.getsize(rp) <= 0:
+        return "", f"ERROR: 文件为空：{rp}"
+    return rp, ""
+
+
+def upload_video_file(rp: str) -> tuple[str, str, str]:
+    """upos 分片上传（preupload → init → PUT 分片 → complete）。
+
+    返回 (filename 无后缀, biz_id/cid, err)——**只传文件，不发布**。
+    """
+    auth_err = _require_auth()
+    if auth_err:
+        return "", "", auth_err
+    size = os.path.getsize(rp)
+    name = os.path.basename(rp)
+    base_hdr = {
+        "User-Agent": UA,
+        "Cookie": _read_token(),
+        "Referer": "https://member.bilibili.com/",
+    }
+
+    # 1) preupload：拿 endpoint / upos_uri / 分片大小 / biz_id
+    q = urllib.parse.urlencode(
+        {
+            "name": name,
+            "r": "upos",
+            "profile": "ugcfx/bup",
+            "size": size,
+            "probe_version": "20221109",
+            "ssl": "0",
+            "version": "2.14.0.0",
+            "build": "2140000",
+            "webVersion": "2.13.0",
+        }
+    )
+    st, body, _h = _raw_request("https://member.bilibili.com/preupload?" + q, headers=base_hdr, timeout=30)
+    if st != 200:
+        return "", "", f"ERROR: preupload HTTP {st}：{_brief(_b(body), 160)}"
+    try:
+        doc = json.loads(_b(body))
+    except ValueError:
+        return "", "", f"ERROR: preupload 响应非 JSON：{_brief(_b(body), 200)}"
+    if doc.get("OK") != 1:
+        return "", "", f"ERROR: preupload 失败：{_brief(json.dumps(doc, ensure_ascii=False), 200)}"
+    auth = doc.get("auth") or ""
+    endpoint = doc.get("endpoint") or ""
+    upos_uri = doc.get("upos_uri") or ""
+    chunk_size = int(doc.get("chunk_size") or 10485760)
+    biz_id = doc.get("biz_id")
+    if not (auth and endpoint and upos_uri):
+        return "", "", f"ERROR: preupload 缺关键字段：{_brief(json.dumps(doc, ensure_ascii=False), 220)}"
+    base = "https:" + endpoint + "/" + upos_uri.split("://", 1)[1]
+    uh = {**base_hdr, "X-Upos-Auth": auth}
+
+    # 2) init：POST ?uploads= 拿 upload_id
+    init_q = urllib.parse.urlencode(
+        {
+            "uploads": "",
+            "output": "json",
+            "profile": "ugcfx/bup",
+            "filesize": size,
+            "partsize": chunk_size,
+            "biz_id": biz_id,
+        }
+    )
+    st, body, _h = _raw_request(base + "?" + init_q, data=b"", headers=uh, method="POST", timeout=60)
+    if st != 200:
+        return "", "", f"ERROR: 初始化分片失败 HTTP {st}：{_brief(_b(body), 160)}"
+    try:
+        doc = json.loads(_b(body))
+    except ValueError:
+        return "", "", f"ERROR: 初始化响应非 JSON：{_brief(_b(body), 200)}"
+    upload_id = doc.get("upload_id") or ""
+    if doc.get("OK") != 1 or not upload_id:
+        return "", "", f"ERROR: 初始化分片失败：{_brief(json.dumps(doc, ensure_ascii=False), 200)}"
+
+    # 3) 分片 PUT（顺序上传，片级重试一次）
+    n_chunks = (size + chunk_size - 1) // chunk_size
+    parts: list[dict] = []
+    with open(rp, "rb") as fh:
+        for i in range(n_chunks):
+            chunk = fh.read(chunk_size)
+            if not chunk:
+                return "", "", f"ERROR: 读文件到第 {i + 1} 片为空（文件大小变化？）"
+            start = i * chunk_size
+            end = start + len(chunk)
+            pq = urllib.parse.urlencode(
+                {
+                    "partNumber": i + 1,
+                    "uploadId": upload_id,
+                    "chunk": i,
+                    "chunks": n_chunks,
+                    "size": len(chunk),
+                    "start": start,
+                    "end": end,
+                    "total": size,
+                }
+            )
+            ph = {**uh, "Content-Type": "application/octet-stream"}
+            last_err = ""
+            for _attempt in (1, 2):
+                st, body, rh = _raw_request(base + "?" + pq, data=chunk, headers=ph, method="PUT", timeout=180)
+                if st == 200:
+                    break
+                last_err = f"HTTP {st} {_brief(_b(body), 120)}"
+            else:
+                return "", "", f"ERROR: 第 {i + 1}/{n_chunks} 片上传失败（{last_err}）"
+            if b"MULTIPART_PUT_SUCCESS" not in body and not body.strip():
+                # 部分节点空 body 也算成功（HTTP 200），只拦明确报错
+                if b"ERROR" in body.upper() or b"<Error" in body:
+                    return "", "", f"ERROR: 第 {i + 1} 片被拒：{_brief(_b(body), 160)}"
+            parts.append({"partNumber": i + 1, "eTag": rh.get("etag") or "etag"})
+
+    # 4) complete 合片（POST；文档示例误写 PUT，POST 失败自动 PUT 兜底）
+    cq = urllib.parse.urlencode(
+        {
+            "output": "json",
+            "name": name,
+            "profile": "ugcfx%2Fbup",
+            "uploadId": upload_id,
+            "biz_id": biz_id,
+        }
+    )
+    payload = json.dumps({"parts": parts}).encode("utf-8")
+    ch = {**uh, "Content-Type": "application/json"}
+    st, body, _h = _raw_request(base + "?" + cq, data=payload, headers=ch, method="POST", timeout=60)
+    if st != 200:
+        st, body, _h = _raw_request(base + "?" + cq, data=payload, headers=ch, method="PUT", timeout=60)
+    try:
+        doc = json.loads(_b(body))
+    except ValueError:
+        return "", "", f"ERROR: 合片响应非 JSON（HTTP {st}）：{_brief(_b(body), 200)}"
+    if doc.get("OK") != 1:
+        return "", "", f"ERROR: 合片失败：{_brief(json.dumps(doc, ensure_ascii=False), 220)}"
+    key = doc.get("key") or upos_uri
+    filename = os.path.splitext(os.path.basename(str(key)))[0]
+    if not filename:
+        return "", "", "ERROR: 合片成功但取不到 filename"
+    return filename, str(biz_id or ""), ""
+
+
+def submit_video(
+    filename: str,
+    cid: str,
+    title: str,
+    desc: str = "",
+    tags: str = "",
+    only_self: bool = False,
+) -> str:
+    """把已上传的视频提交为 B站稿件（predict 分区 → add/v3）。
+
+    成功返回可见性 + BV 链接 + aid；失败返回 ERROR 开头原因。
+    """
+    filename = (filename or "").strip()
+    cid_s = (cid or "").strip()
+    title = (title or "").strip()
+    if not filename or not re.fullmatch(r"[0-9a-zA-Z_\-]{5,80}", filename):
+        return "ERROR: filename 不对（应为上传返回的无后缀文件名）"
+    if not cid_s.isdigit():
+        return "ERROR: cid 必须是上传返回的数字"
+    if not title:
+        return "ERROR: title 不能为空"
+    if len(title) > 80:
+        return f"ERROR: 标题超过 80 字（当前 {len(title)}）"
+    desc = (desc or "").strip()
+    if len(desc) > 2000:
+        return f"ERROR: 简介超过 2000 字（当前 {len(desc)}）"
+    tag_str = ",".join(t.strip() for t in (tags or "").split(",") if t.strip()) or "AI视频"
+    if len([t for t in tag_str.split(",") if t]) > 10:
+        return "ERROR: 标签最多 10 个"
+    auth_err = _require_auth()
+    if auth_err:
+        return auth_err
+
+    _, jct = _creds()
+    base_hdr = {
+        "User-Agent": UA,
+        "Cookie": _read_token(),
+        "Referer": "https://member.bilibili.com/",
+    }
+
+    # 1) 预测分区（Web 端 tid 只能取 predict 第一个，官方文档口径）
+    st, body, _h = _raw_request(
+        "https://member.bilibili.com/x/vupre/web/archive/types/predict?csrf=" + jct,
+        data=urllib.parse.urlencode({"filename": filename, "title": title}).encode("utf-8"),
+        headers={
+            **base_hdr,
+            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+        },
+        method="POST",
+        timeout=30,
+    )
+    tid = 0
+    if st == 200:
+        try:
+            doc = json.loads(_b(body))
+            arr = doc.get("data") or []
+            if isinstance(arr, list) and arr:
+                tid = int(arr[0].get("id") or 0)
+        except (ValueError, TypeError, AttributeError):
+            tid = 0
+    if tid <= 0:
+        return f"ERROR: 预测分区失败（HTTP {st}：{_brief(_b(body), 160)}），稿件未提交，稍后重试"
+
+    # 2) 提交稿件 add/v3（JSON body，csrf 进 query + body）
+    ms = str(int(time.time() * 1000))
+    payload = {
+        "videos": [{"filename": filename, "title": title, "desc": "", "cid": int(cid_s)}],
+        "cover43": "",
+        "title": title,
+        "copyright": 1,
+        "tid": tid,
+        "tag": tag_str,
+        "desc_format_id": 9999,
+        "desc": desc,
+        "recreate": -1,
+        "dynamic": "",
+        "interactive": 0,
+        "act_reserve_create": 0,
+        "no_disturbance": 0,
+        "no_reprint": 1,
+        "subtitle": {"open": 0, "lan": ""},
+        "dolby": 0,
+        "lossless_music": 0,
+        "up_selection_reply": False,
+        "up_close_reply": False,
+        "up_close_danmu": False,
+        "web_os": 3,
+        "is_only_self": 1 if only_self else 0,
+        "csrf": jct,
+    }
+    url = "https://member.bilibili.com/x/vu/web/add/v3?ts=" + ms + "&csrf=" + urllib.parse.quote(jct)
+    st, body, _h = _raw_request(
+        url,
+        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        headers={**base_hdr, "Content-Type": "application/json; charset=utf-8"},
+        method="POST",
+        timeout=60,
+    )
+    if st != 200:
+        return f"ERROR: 投稿接口 HTTP {st}：{_brief(_b(body), 200)}"
+    try:
+        doc = json.loads(_b(body))
+    except ValueError:
+        return f"ERROR: 投稿响应非 JSON：{_brief(_b(body), 200)}"
+    code = doc.get("code", -1)
+    if code != 0:
+        msg = doc.get("message", "")
+        if code == -111:
+            return "ERROR: csrf 校验失败（-111），bili_jct 不对或与 SESSDATA 不匹配"
+        if code == -101:
+            return "ERROR: 登录态过期（-101），更新 bili_token 里的 SESSDATA"
+        if code in (-412, -352):
+            return f"ERROR: 被 B站风控拦截（code={code}），稍后再试"
+        return f"ERROR: 投稿被拒 code={code}：{_brief(msg, 140)}"
+    d = doc.get("data") or {}
+    aid = d.get("aid")
+    bvid = d.get("bvid") or ""
+    vis = "仅自己可见" if only_self else "公开"
+    return (
+        f"已投稿成功（{vis}）：{bvid or aid}  https://www.bilibili.com/video/{bvid}\n"
+        f"aid={aid}（删除/撤回时优先传 aid，审核中的稿件按 BV 查不到）"
+    )

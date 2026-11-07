@@ -22,7 +22,8 @@
 | `douyin_post` | **发布抖音视频作品（创作者中心网页，不碰手机）**——只发 `data/video_out/` 白名单里的视频，标题 ≤40 字，同标题不重发 |
 | `bilibili_browse` / `bilibili_comment` | 刷B站推荐 / 给**当前这条**发评论（同上；广告/会员购卡自动跳过） |
 | `bilibili_reply` | 回复B站评论区某条（锚定逻辑同上） |
-| `bilibili_post` | **发布B站文字动态（走 Web API，不碰手机）**——标题写成正文第一行 |
+| `bilibili_post` | **发布B站动态（文字/图文，走 Web API，不碰手机）**——标题写成正文第一行；`images` 可带 1-9 张本地图（jpg/png/gif，`data/` 目录下） |
+| `bilibili_post_video` | **B站视频投稿（API：分片上传→分区预测→提交）**——video_out 白名单；`private=true` 仅自己可见（测试档） |
 
 另有**每日日记定时任务**（`wanwan_diary_daily`，默认 18:00）：载入人格 → 读当天素材 → 写日记 → 生成配图 → 发布 → 把链接播报给主人；
 以及**手机心跳看门狗**（`wanwan_phone_heartbeat`，每 5 分钟）：探测 adb 通道，断线 QQ 告警（30 分钟冷却）、恢复也报一声——配套手机侧 Magisk `service.d/98-keepalive.sh` 保活循环（守 5555 端口、ZT 心跳、Doze 豁免）。

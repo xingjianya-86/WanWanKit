@@ -740,12 +740,14 @@ class TestBiliApi:
         ctx = SimpleNamespace(deps=SimpleNamespace(bot=None, allow_user_outbound=False))
 
         # ERROR 透传
-        monkeypatch.setattr(bili_api, "post_dynamic", lambda t: "ERROR: 登录态过期（-101），更新 SESSDATA。")
+        monkeypatch.setattr(bili_api, "post_dynamic", lambda t, imgs=None: "ERROR: 登录态过期（-101），更新 SESSDATA。")
         out = asyncio.run(bl.bilibili_post(ctx, "一段正文"))
         assert out.startswith("⚠️") and "-101" in out
 
         # 成功 + 去重
-        monkeypatch.setattr(bili_api, "post_dynamic", lambda t: "已发布动态 id=42  https://t.bilibili.com/42")
+        monkeypatch.setattr(
+            bili_api, "post_dynamic", lambda t, imgs=None: "已发布动态 id=42  https://t.bilibili.com/42"
+        )
         out = asyncio.run(bl.bilibili_post(ctx, "深海时间的测试动态"))
         assert out.startswith("✅") and "t.bilibili.com/42" in out
         out2 = asyncio.run(bl.bilibili_post(ctx, "深海时间的测试动态"))
@@ -754,6 +756,259 @@ class TestBiliApi:
         # 空正文
         out3 = asyncio.run(bl.bilibili_post(ctx, "  "))
         assert out3.startswith("⚠️")
+
+
+class TestBiliPostVideo:
+    """视频投稿：白名单/参数校验必须在网络前拦住；工具层两段式 ERROR 透传。"""
+
+    def test_resolve_video_path_whitelist(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        from wanwan_skills.core import bili_api
+
+        root = tmp_path / "video_out"
+        root.mkdir()
+        monkeypatch.setattr(bili_api, "_UPLOAD_ROOTS", (str(root),))
+
+        ok = root / "a.mp4"
+        ok.write_bytes(b"\x00\x01")
+
+        rp, err = bili_api.resolve_video_path("")
+        assert err and "不能为空" in err
+        # 白名单外（含 .. 穿越——realpath 归一后仍拦）
+        outside = tmp_path / "evil.mp4"
+        outside.write_bytes(b"x")
+        rp, err = bili_api.resolve_video_path(str(outside))
+        assert err and "白名单" in err.replace("只允许上传", "白名单") or "只允许上传" in err
+        # 不存在 / 空文件
+        rp, err = bili_api.resolve_video_path(str(root / "missing.mp4"))
+        assert err and "不存在" in err
+        empty = root / "empty.mp4"
+        empty.write_bytes(b"")
+        rp, err = bili_api.resolve_video_path(str(empty))
+        assert err and "为空" in err
+        # 正常：返回 realpath 且无错
+        rp, err = bili_api.resolve_video_path(str(ok))
+        assert err == "" and rp.endswith("a.mp4")
+
+    def test_submit_video_param_guards_no_network(self) -> None:
+        """参数校验在鉴权与网络之前——本地就能全拦。"""
+        from wanwan_skills.core import bili_api
+
+        assert "filename" in bili_api.submit_video("bad file!", "123", "标题")
+        assert "cid" in bili_api.submit_video("valid_name-1", "abc", "标题")
+        assert "title" in bili_api.submit_video("valid_name-1", "123", "   ")
+        assert "80" in bili_api.submit_video("valid_name-1", "123", "字" * 81)
+        assert "2000" in bili_api.submit_video("valid_name-1", "123", "标题", desc="字" * 2001)
+        assert "10 个" in bili_api.submit_video("valid_name-1", "123", "标题", tags=",".join("t" * 11))
+
+    def test_upload_needs_auth(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """缺凭据时上传直接报错，不碰网络。"""
+
+        from wanwan_skills.core import bili_api
+
+        monkeypatch.setattr(bili_api, "TOKEN_PATH", str(tmp_path / "missing_token"))
+        f = tmp_path / "v.mp4"
+        f.write_bytes(b"\x00")
+        filename, cid, err = bili_api.upload_video_file(str(f))
+        assert filename == "" and cid == "" and err.startswith("ERROR") and "登录态" in err
+
+    def test_post_video_tool_flow(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """工具层：护栏 → 上传 → 提交 → 去重；两段 ERROR 都透传。"""
+        import asyncio
+        from types import SimpleNamespace
+
+        from wanwan_skills.core import bili_api
+        from wanwan_skills.tools import bilibili as bl
+
+        root = tmp_path / "video_out"
+        root.mkdir()
+        vid = root / "a.mp4"
+        vid.write_bytes(b"\x00\x01")
+        monkeypatch.setattr(bili_api, "_UPLOAD_ROOTS", (str(root),))
+        monkeypatch.setattr(bl, "_USED_POSTS", tmp_path / "used.json")
+        monkeypatch.setattr(bl, "load_config", lambda: SimpleNamespace(bili_ready=True, bili_token_path="/tmp/tok"))
+        monkeypatch.setattr(bili_api, "set_token_path", lambda p: None)
+        ctx = SimpleNamespace(deps=SimpleNamespace(bot=None, allow_user_outbound=False))
+
+        # 护栏（不起 upload/submit）——注意工具走 asyncio.to_thread，替身必须是同步函数
+        def _boom(*_a: object, **_k: object) -> object:
+            raise AssertionError("护栏失效")
+
+        monkeypatch.setattr(bili_api, "upload_video_file", _boom)
+        out = asyncio.run(bl.bilibili_post_video(ctx, str(vid), "  "))
+        assert out.startswith("⚠️") and "title" in out
+        out = asyncio.run(bl.bilibili_post_video(ctx, str(vid), "字" * 81))
+        assert "超长" in out
+        out = asyncio.run(bl.bilibili_post_video(ctx, str(tmp_path / "x.mp4"), "标题"))
+        assert "只允许上传" in out or "白名单" in out
+
+        # 上传段 ERROR → ⚠️，不进提交
+        calls: list[str] = []
+
+        def _up_fail(_rp: str) -> tuple[str, str, str]:
+            calls.append("up")
+            return "", "", "ERROR: preupload HTTP 502：bad gateway"
+
+        def _sub_ok(*_a: object) -> str:
+            calls.append("sub")
+            return "已投稿成功（仅自己可见）：BV1xx  https://www.bilibili.com/video/BV1xx\naid=99"
+
+        monkeypatch.setattr(bili_api, "upload_video_file", _up_fail)
+        monkeypatch.setattr(bili_api, "submit_video", _sub_ok)
+        out = asyncio.run(bl.bilibili_post_video(ctx, str(vid), "海洋试投"))
+        assert out.startswith("⚠️") and "502" in out
+        assert calls == ["up"], "上传失败不该进提交"
+
+        # 提交段 ERROR → ⚠️（文件已传但不记去重，可重投）
+        def _up_ok(_rp: str) -> tuple[str, str, str]:
+            return "file_abc123", "4242", ""
+
+        def _sub_fail(*_a: object) -> str:
+            return "ERROR: 被 B站风控拦截（code=-412），稍后再试"
+
+        monkeypatch.setattr(bili_api, "upload_video_file", _up_ok)
+        monkeypatch.setattr(bili_api, "submit_video", _sub_fail)
+        out = asyncio.run(bl.bilibili_post_video(ctx, str(vid), "海洋试投"))
+        assert out.startswith("⚠️") and "-412" in out
+
+        # 成功 → ✅ + 参数透传 + 去重
+        seen: dict[str, object] = {}
+
+        def _sub_good(filename: str, cid: str, title: str, desc: str, tags: str, only_self: bool) -> str:
+            seen.update(filename=filename, cid=cid, title=title, desc=desc, tags=tags, only_self=only_self)
+            return "已投稿成功（仅自己可见）：BV1yy  https://www.bilibili.com/video/BV1yy\naid=100"
+
+        monkeypatch.setattr(bili_api, "submit_video", _sub_good)
+        out = asyncio.run(
+            bl.bilibili_post_video(ctx, str(vid), "海洋试投", desc="简介", tags="海洋,日记", private=True)
+        )
+        assert out.startswith("✅") and "BV1yy" in out
+        assert seen["filename"] == "file_abc123" and seen["cid"] == "4242"
+        assert seen["title"] == "海洋试投" and seen["tags"] == "海洋,日记" and seen["only_self"] is True
+
+        # 同标题去重
+        out2 = asyncio.run(bl.bilibili_post_video(ctx, str(vid), "海洋试投"))
+        assert out2.startswith("⚠️") and "已经投过" in out2
+
+
+class TestBiliImagePost:
+    """图文动态：multipart 手搓 + 图片护栏 + pics 透传（协议 2026-11-08 查证）。"""
+
+    def test_multipart_shape(self) -> None:
+        from wanwan_skills.core.bili_api import _multipart
+
+        body, boundary = _multipart(
+            {"category": "daily", "csrf": "J"},
+            [("file_up", "a.jpg", b"\xff\xd8img-bytes", "image/jpeg")],
+        )
+        text = body.decode("utf-8", "replace")
+        assert boundary in text
+        assert 'name="category"' in text and "daily" in text
+        assert 'name="csrf"' in text and "J" in text
+        assert 'filename="a.jpg"' in text and "image/jpeg" in text
+        assert b"\xff\xd8img-bytes" in body
+        assert text.endswith(f"--{boundary}--\r\n")
+
+    def test_upload_image_guards_no_network(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        from wanwan_skills.core import bili_api
+
+        tok = tmp_path / "tok"
+        tok.write_text("SESSDATA=x; bili_jct=y", encoding="utf-8")
+        monkeypatch.setattr(bili_api, "TOKEN_PATH", str(tok))
+
+        info, err = bili_api.upload_dynamic_image(b"", "a.jpg")
+        assert info is None and "为空" in err
+        info, err = bili_api.upload_dynamic_image(b"x", "a.bmp")
+        assert info is None and "jpg/png/gif" in err
+
+        # 缺凭据：先报登录态，不碰网络
+        monkeypatch.setattr(bili_api, "TOKEN_PATH", str(tmp_path / "none"))
+        info, err = bili_api.upload_dynamic_image(b"x", "a.jpg")
+        assert info is None and err.startswith("ERROR") and "登录态" in err
+
+    def test_post_dynamic_pic_guards(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        from wanwan_skills.core import bili_api
+
+        tok = tmp_path / "tok"
+        tok.write_text("SESSDATA=x; bili_jct=y", encoding="utf-8")
+        monkeypatch.setattr(bili_api, "TOKEN_PATH", str(tok))
+
+        out = bili_api.post_dynamic("   ")
+        assert out.startswith("ERROR") and "不能为空" in out
+        out = bili_api.post_dynamic("正文", [{"img_src": "http://x"}] * 10)
+        assert out.startswith("ERROR") and "9 张" in out
+
+    def test_post_tool_images_flow(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        import asyncio
+        from types import SimpleNamespace
+
+        from wanwan_skills.core import bili_api
+        from wanwan_skills.tools import bilibili as bl
+
+        root = tmp_path / "data"
+        (root / "wanwan").mkdir(parents=True)
+        img = root / "wanwan" / "pic.jpg"
+        img.write_bytes(b"\xff\xd8")
+        monkeypatch.setattr(bl, "_IMG_ROOT", root)
+        monkeypatch.setattr(bl, "_USED_POSTS", tmp_path / "used.json")
+        monkeypatch.setattr(bl, "load_config", lambda: SimpleNamespace(bili_ready=True, bili_token_path="/t"))
+        monkeypatch.setattr(bili_api, "set_token_path", lambda p: None)
+        ctx = SimpleNamespace(deps=SimpleNamespace(bot=None, allow_user_outbound=False))
+
+        # —— 护栏（网络前全拦）——
+        out = asyncio.run(bl.bilibili_post(ctx, ""))
+        assert out.startswith("⚠️") and "请提供 text" in out
+        out = asyncio.run(bl.bilibili_post(ctx, "正文", ["rel.jpg"]))
+        assert "绝对路径" in out
+        out = asyncio.run(bl.bilibili_post(ctx, "正文", [str(tmp_path / "outside.jpg")]))
+        assert "白名单" in out or "不在" in out
+        out = asyncio.run(bl.bilibili_post(ctx, "正文", [str(root / "wanwan" / "missing.png")]))
+        assert "不存在" in out
+        bad = root / "wanwan" / "x.bmp"
+        bad.write_bytes(b"x")
+        out = asyncio.run(bl.bilibili_post(ctx, "正文", [str(bad)]))
+        assert "jpg/png/gif" in out
+        out = asyncio.run(bl.bilibili_post(ctx, "正文", [str(img)] * 10))
+        assert "9 张" in out
+
+        # —— 成功链：图片逐张上传 → pics 透传 → 纯图去重 ——
+        up_calls: list[str] = []
+
+        def _up(data: bytes, filename: str = "wanwan.jpg") -> tuple[dict, str]:
+            up_calls.append(filename)
+            return {
+                "img_src": "http://i0.hdslb.com/bfs/new_dyn/x.png",
+                "img_width": 720,
+                "img_height": 720,
+                "img_size": 100.0,
+            }, ""
+
+        posted: dict[str, object] = {}
+
+        def _post(text: str, images: list[dict] | None = None) -> str:
+            posted.update(text=text, images=images)
+            return "已发布图文动态 id=999  https://t.bilibili.com/999"
+
+        monkeypatch.setattr(bili_api, "upload_dynamic_image", _up)
+        monkeypatch.setattr(bili_api, "post_dynamic", _post)
+
+        out = asyncio.run(bl.bilibili_post(ctx, "", [str(img)]))
+        assert out.startswith("✅") and "图文动态" in out
+        assert up_calls == ["pic.jpg"]
+        assert posted["text"] == ""
+        infos = posted["images"]
+        assert isinstance(infos, list) and infos[0]["img_src"].startswith("http://i0.hdslb.com")
+
+        # 同图再发（纯图动态去重键 = 图片名组合）
+        out2 = asyncio.run(bl.bilibili_post(ctx, "", [str(img)]))
+        assert out2.startswith("⚠️") and "已经发过" in out2
+
+        # 图文混合 + 上传失败即止（一张失败整条不发、不记去重）
+        def _up_fail(_data: bytes, _filename: str = "wanwan.jpg") -> tuple[None, str]:
+            return None, "ERROR: 上传被拒 code=4100001"
+
+        monkeypatch.setattr(bili_api, "upload_dynamic_image", _up_fail)
+        out3 = asyncio.run(bl.bilibili_post(ctx, "另一段正文", [str(img)]))
+        assert out3.startswith("⚠️") and "4100001" in out3
 
 
 class TestDouyinJunk:

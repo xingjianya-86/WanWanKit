@@ -41,6 +41,7 @@ _PINK = (251, 114, 153)
 
 _USED_COMMENTS = Path("/gsuid_core/data/wanwan/.bili_used_comments.json")
 _USED_POSTS = Path("/gsuid_core/data/wanwan/.bili_post_used.json")
+_IMG_ROOT = Path("/gsuid_core/data")  # 图文动态配图白名单（容器数据卷内）
 
 
 @dataclass(frozen=True)
@@ -636,37 +637,147 @@ async def bilibili_reply(
     capability_domain=_CAP_DOMAIN,
     covers=_COVERS,
     code_callable=False,
-    timeout=90.0,
+    timeout=150.0,
 )
 async def bilibili_post(
     ctx: RunContext[ToolContext],
-    text: str,
+    text: str = "",
+    images: list[str] | None = None,
 ) -> str:
-    """在B站账号发布一条**文字动态**（走 B站 Web API，不操作手机）。
+    """在B站账号发布一条动态（文字或**图文**，走 B站 Web API，不操作手机）。
 
     只发主人确认过的正文原文——本工具不改写、不代写。文字动态没有独立
-    标题位，想带标题就把标题写成正文第一行。同一段内容不重复发；
-    失败原样返回原因（登录态过期/风控等），不会硬闯。
+    标题位，想带标题就把标题写成正文第一行。可选带 1-9 张本地图（图文动态）；
+    同内容不重复发；失败原样返回原因（登录态过期/风控等），不会硬闯。
 
     Args:
-        text: 动态正文（要发什么就写什么，含首行标题）。
+        text: 动态正文（要发什么就写什么，含首行标题）；纯图动态可留空。
+        images: 本地图片路径列表（1-9 张，jpg/png/gif，须在 data/ 目录下）。
     """
     cfg = load_config()
     if cfg is None:
         return "⚠️ wanwan_skills 未配置（缺 plugins_configs/wanwan_skills.json）"
-    clean = (text or "").strip()
-    if not clean:
-        return "⚠️ 请提供 text（动态正文）"
     if not cfg.bili_ready:
         return "⚠️ 缺 B站登录态：把 Cookie（SESSDATA; bili_jct）写进 bili_token_path 指向的文件"
-    if clean in _used_posts():
+
+    clean = (text or "").strip()
+    imgs = [p.strip() for p in (images or []) if p and p.strip()]
+    if not clean and not imgs:
+        return "⚠️ 请提供 text（动态正文）或 images（至少一张图）"
+    if len(imgs) > 9:
+        return "⚠️ 图文动态最多 9 张图"
+
+    # 图片护栏：起任何网络请求前全部拦住
+    resolved: list[Path] = []
+    for i, p in enumerate(imgs, 1):
+        path = Path(p)
+        if not path.is_absolute():
+            return f"⚠️ 第 {i} 张图请用绝对路径"
+        try:
+            path.resolve().relative_to(_IMG_ROOT.resolve())
+        except (ValueError, OSError):
+            return f"⚠️ 第 {i} 张图不在 {_IMG_ROOT} 下（白名单外不上传）"
+        if not path.is_file():
+            return f"⚠️ 第 {i} 张图不存在：{path}"
+        if path.suffix.lower() not in (".jpg", ".jpeg", ".png", ".gif"):
+            return f"⚠️ 第 {i} 张图格式仅支持 jpg/png/gif"
+        if path.stat().st_size > 10 * 1024 * 1024:
+            return f"⚠️ 第 {i} 张图超过 10MB"
+        resolved.append(path)
+
+    # 去重键：正文（纯图动态用图片名组合）
+    key = clean or "图:" + ",".join(p.name for p in resolved)
+    if key in _used_posts():
         return "⚠️ 这条动态已经发过了，换一段"
 
     bili_api.set_token_path(cfg.bili_token_path)
-    out = await asyncio.to_thread(bili_api.post_dynamic, clean)
-    if out.startswith("ERROR"):
-        return "⚠️ " + out[6:].lstrip(": ").strip()
 
-    _mark_post_used(clean)
-    logger.info(f"[wanwan] B站动态已发：{clean[:40]}")
+    # 图片逐张上传（失败即止，一张都不发）
+    infos: list[dict] = []
+    for i, path in enumerate(resolved, 1):
+        try:
+            data = path.read_bytes()
+        except OSError as exc:
+            return f"⚠️ 第 {i} 张图读取失败：{exc}"
+        info, err = await asyncio.to_thread(bili_api.upload_dynamic_image, data, path.name)
+        if err:
+            logger.warning(f"[wanwan] B站配图上传失败：{err[:120]}")
+            return "⚠️ " + err.removeprefix("ERROR").lstrip(": ").strip()
+        infos.append(info)
+
+    out = await asyncio.to_thread(bili_api.post_dynamic, clean, infos or None)
+    if out.startswith("ERROR"):
+        return "⚠️ " + out.removeprefix("ERROR").lstrip(": ").strip()
+
+    _mark_post_used(key)
+    logger.info(f"[wanwan] B站动态已发：{(clean or '（纯图）')[:40]} 图{len(infos)}张")
+    return f"✅ {out}"
+
+
+@ai_tools(
+    category="common",
+    capability_domain=_CAP_DOMAIN,
+    covers=_COVERS,
+    code_callable=False,
+    timeout=900.0,
+)
+async def bilibili_post_video(
+    ctx: RunContext[ToolContext],
+    video: str,
+    title: str,
+    desc: str = "",
+    tags: str = "",
+    private: bool = False,
+) -> str:
+    """把 video_out 里的视频投稿到B站（API 三段式，不碰手机）。
+
+    只发主人确认过的标题/简介——本工具不代写。视频必须已在 video_out
+    目录（video_generate 的产物）。先上传文件再提交稿件，一步到位；
+    private=true 先仅自己可见（测试/未定稿用），正式发布保持 false。
+    同标题不重复投稿；失败原样返回原因（登录态/风控/分区），不硬闯。
+
+    Args:
+        video: 视频绝对路径（须在 /gsuid_core/data/video_out 下）。
+        title: 稿件标题，≤80 字。
+        desc: 简介，≤2000 字，可空。
+        tags: 标签逗号分隔，最多 10 个，空则默认「AI视频」。
+        private: true = 仅自己可见；false = 公开（默认）。
+    """
+    cfg = load_config()
+    if cfg is None:
+        return "⚠️ wanwan_skills 未配置（缺 plugins_configs/wanwan_skills.json）"
+    if not cfg.bili_ready:
+        return "⚠️ 缺 B站登录态：把 Cookie（SESSDATA; bili_jct）写进 bili_token_path 指向的文件"
+
+    title_c = (title or "").strip()
+    if not title_c:
+        return "⚠️ 请提供 title（稿件标题）"
+    if len(title_c) > 80:
+        return f"⚠️ 标题超长（{len(title_c)} > 80 字），请精简后再投"
+    desc_c = (desc or "").strip()
+    if len(desc_c) > 2000:
+        return f"⚠️ 简介超长（{len(desc_c)} > 2000 字）"
+    tag_list = [t.strip() for t in (tags or "").split(",") if t.strip()]
+    if len(tag_list) > 10:
+        return "⚠️ 标签最多 10 个"
+
+    rp, err = await asyncio.to_thread(bili_api.resolve_video_path, video)
+    if err:
+        return "⚠️ " + err.removeprefix("ERROR").lstrip(": ").strip()
+    if title_c in _used_posts():
+        return "⚠️ 这个标题的稿件已经投过了，换一个"
+
+    bili_api.set_token_path(cfg.bili_token_path)
+    filename, cid, up_err = await asyncio.to_thread(bili_api.upload_video_file, rp)
+    if up_err:
+        logger.warning(f"[wanwan] B站视频上传失败：{up_err[:120]}")
+        return "⚠️ " + up_err.removeprefix("ERROR").lstrip(": ").strip()
+
+    out = await asyncio.to_thread(bili_api.submit_video, filename, cid, title_c, desc_c, ",".join(tag_list), private)
+    if out.startswith("ERROR"):
+        logger.warning(f"[wanwan] B站投稿提交失败：{out[:120]}")
+        return "⚠️ " + out.removeprefix("ERROR").lstrip(": ").strip()
+
+    _mark_post_used(title_c)
+    logger.info(f"[wanwan] B站视频已投稿：{title_c}")
     return f"✅ {out}"
