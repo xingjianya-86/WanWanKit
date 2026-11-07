@@ -322,17 +322,20 @@ async def douyin_comment(
                 logger.warning(f"[wanwan] 发送按钮未找到，底部控件: {bottom}")
                 return "⚠️ 没找到发送按钮，评论未发出"
             await phone.tap(serial, *send)
-            await asyncio.sleep(random.uniform(1.2, 1.8))
 
-            # 验证：发送成功会清空输入框；没清空就**重新定位**（按钮可能又漂了）再点一次
-            if not await _input_cleared(serial, clean):
-                fresh = await _locate_send_stable(serial, tries=2)
-                await phone.tap(serial, *(fresh or send))
-                await asyncio.sleep(random.uniform(1.2, 1.8))
-            if not await _input_cleared(serial, clean):
+            # 单次点击 + 轮询等清空（最多 ~9s）。
+            # 绝不点第二次：tap1 在途时输入框还没清，再点一次会把评论发两条
+            # （真机复现过）；工具级重试是安全的——重新进来会先 DEL 清空再输入。
+            cleared = False
+            for _ in range(6):
+                await asyncio.sleep(1.5)
+                if await _input_cleared(serial, clean):
+                    cleared = True
+                    break
+            if not cleared:
                 await _abort_panel(serial)
-                logger.warning("[wanwan] 发送按钮点击两次仍无效，已放弃")
-                return "⚠️ 点击发送无效，评论未发出（文字仍在输入框）"
+                logger.warning("[wanwan] 发送后输入框 9s 未清空，放弃（不重发，避免重复评论）")
+                return "⚠️ 发送未确认（输入框未清空），评论可能未发出"
 
             shot = await phone.screenshot(serial, cfg, name="douyin_comment")
     except adb.AdbError as exc:
@@ -355,13 +358,14 @@ async def _input_cleared(serial: str, text: str) -> bool:
 
     关键：dump 失败时 ui() 会**静默返回空列表**，那不是「清空了」——
     必须重试；耗尽仍拿不到控件树就保守当作「没清空」，
-    宁可多点一次也绝不能假报「已发送」（10:28 就是这么误判的）。
-    只认底部输入条区域（y>=2170）：评论列表里的同文节点位置更高（y<=2160）。
+    宁可多等也绝不能假报「已发送」。
+    文字位置用 phone.is_input_node 认（键盘打开时在 y≈934，不是固定 y≥2170）；
+    评论列表里的同文节点不算输入框（发出去之后它出现在列表里是正常的）。
     """
     for i in range(3):
         nodes = await phone.ui(serial)
         if nodes:
-            return not any(text[:6] in n.text and n.y1 >= 2170 for n in nodes)
+            return not any(text[:6] in n.text and phone.is_input_node(n) for n in nodes)
         await asyncio.sleep(0.6 + i * 0.5)
     logger.warning("[wanwan] uiautomator dump 连续失败，按「未清空」保守处理")
     return False

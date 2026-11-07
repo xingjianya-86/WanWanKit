@@ -14,6 +14,8 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
 
+from gsuid_core.logger import logger
+
 from ..config import WanwanConfig
 from . import adb
 
@@ -48,6 +50,20 @@ class UINode:
             body = body[:40] + "…"
         mark = " [可点]" if self.clickable else ""
         return f"{body}{mark} @({self.x1},{self.y1})" if body else f"<{self.cls}> @({self.x1},{self.y1})"
+
+
+def is_input_node(n: UINode) -> bool:
+    """dump 里的「评论输入框文字」节点。
+
+    输入框位置会变：键盘/表情面板打开时在 y≈934（贴左缘的宽框），
+    关着时在底部 y≥2170（还可能带一份 y≈2205 的残留副本）。
+    按固定 y 过滤会漏判——漏判会引发两处错误：
+    type_text 误以为没上屏而重播（文字翻倍）、_input_cleared 误判已清空。
+    评论列表节点 x1≥120、视频简介在 y≈1550，都能被这两条排除。
+    """
+    if n.y1 >= 2170:
+        return True
+    return n.y1 < 1150 and n.x1 <= 60 and (n.x2 - n.x1) >= 900
 
 
 async def screen_size(serial: str) -> tuple[int, int]:
@@ -187,7 +203,7 @@ async def type_text(serial: str, text: str) -> bool:
 
     # 批量删掉残留：keyevent 67=DEL，一次可带多个
     nodes = await ui(serial)
-    existing = max((len(n.text) for n in nodes if n.y1 >= 2170 and n.text), default=0)
+    existing = max((len(n.text) for n in nodes if is_input_node(n) and n.text), default=0)
     if existing:
         dels = ["67"] * min(existing + 3, 60)
         await adb.shell(serial, "input", "keyevent", *dels, timeout=25)
@@ -207,9 +223,20 @@ async def type_text(serial: str, text: str) -> bool:
         )
         await _async_sleep(1.2)
         nodes = await ui(serial)
-        # 只认输入框区域（y>=2000）的上屏结果：别处出现同字属误判
-        if any(text[:6] in n.text and n.y1 >= 2000 for n in nodes):
+        # 输入框位置会变（键盘开 y≈934 / 关着 y≥2170），用 is_input_node 认
+        if any(text[:6] in n.text and is_input_node(n) for n in nodes):
             return True
+        if not nodes:
+            # dump 瞬时空 ≠ 没上屏：绝不能因此重播——重播会把同一段文字
+            # 播两遍拼进输入框（真机复现过）。等一下重读，读不到就报失败。
+            await _async_sleep(1.0)
+            nodes = await ui(serial)
+            if any(text[:6] in n.text and is_input_node(n) for n in nodes):
+                return True
+            if not nodes:
+                logger.warning("[wanwan] type_text: dump 连续读不到，放弃重播（避免文字翻倍）")
+                return False
+        # dump 正常但确实没上屏 → 真没播进去，才允许重播
     return False
 
 

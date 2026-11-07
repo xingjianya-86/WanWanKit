@@ -370,6 +370,24 @@ class TestPhone:
         for bad in ("shell", "rm", "reboot", "exec", "am start", ""):
             assert bad not in _ACTIONS
 
+    def test_is_input_node_tracks_moving_input_box(self) -> None:
+        """输入框位置随键盘状态变，固定 y 过滤会漏判（曾致 type_text 文字翻倍）。"""
+        from wanwan_skills.core.phone import UINode, is_input_node
+
+        def node(x1: int, y1: int, x2: int, y2: int) -> UINode:
+            return UINode(text="", desc="", cls="T", clickable=False, x1=x1, y1=y1, x2=x2, y2=y2)
+
+        # 键盘/表情面板打开：输入框是 y≈934 的贴左宽框
+        assert is_input_node(node(30, 934, 1045, 1060))
+        # 关着：底部输入条
+        assert is_input_node(node(55, 2205, 590, 2210))
+        # dump 里的 2px 残留副本（在底部条区域）
+        assert is_input_node(node(953, 2208, 1017, 2210))
+        # 评论列表节点从 x1≈120 起，不算输入框
+        assert not is_input_node(node(150, 700, 1040, 850))
+        # 视频简介在 y≈1550，不算
+        assert not is_input_node(node(30, 1550, 950, 1750))
+
 
 class TestDouyinJunk:
     """直播 / 广告卡片必须被识别跳过。"""
