@@ -4,8 +4,24 @@ __pycache__/
 .ruff_cache/
 *.egg-info/
 
-# 本地环境与密钥（绝不入库）
+# 本地环境（绝不入库）
 .venv/
 venv/
 *.env
 *.secret
+
+# 密钥与凭据（绝不入库——真实值只落 data/ 目录）
+.bili_token*
+.ark_api_key*
+.mimo_api_key*
+.site_password*
+.douyin_cookie*
+.dy_*.json
+.secrets/
+*.key
+plugins_configs/
+
+# 本地部署/中转产物
+skills_new/
+*.tar
+*.tgz
