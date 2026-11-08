@@ -283,7 +283,7 @@ async def diary_illustrate(
     """
     cfg = load_config()
     if cfg is None:
-        return "⚠️ wanwan_skills 未配置（缺 plugins_configs/wanwan_skills.json）"
+        return "⚠️ WanWanKit 未配置（缺 plugins_configs/wanwan_skills.json）"
     if not cfg.ark_ready:
         return "⚠️ 未配置 ark_api_key，无法生图"
     if not cfg.site_ready:
@@ -354,7 +354,7 @@ async def diary_publish(
     """
     cfg = load_config()
     if cfg is None:
-        return "⚠️ wanwan_skills 未配置（缺 plugins_configs/wanwan_skills.json）"
+        return "⚠️ WanWanKit 未配置（缺 plugins_configs/wanwan_skills.json）"
     if not cfg.site_ready:
         return "⚠️ 站点未配置（缺 site_username / site_password）"
 
@@ -381,7 +381,7 @@ async def diary_upload_image(
     """
     cfg = load_config()
     if cfg is None:
-        return "⚠️ wanwan_skills 未配置"
+        return "⚠️ WanWanKit 未配置"
     if not cfg.site_ready:
         return "⚠️ 站点未配置"
 

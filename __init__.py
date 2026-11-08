@@ -1,1 +1,1 @@
-"""wanwan_skills 插件（外层包标记）。"""
+"""WanWanKit 插件（外层包标记）。"""

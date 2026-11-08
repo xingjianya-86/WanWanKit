@@ -534,7 +534,7 @@ async def bilibili_reply(
     text: str,
     target: str = "",
 ) -> str:
-    """回复B站当前视频评论区里的某条评论。
+    """回复并发送B站当前视频评论区里的某条评论（按作者/内容锚定）。
 
     先用 bilibili_browse 停在目标视频（面板开没开都行）。全程不滑动。
     回复归属是输入框预填的「回复 作者 :」字面前缀——工具会**追加正文
@@ -656,7 +656,7 @@ async def bilibili_post(
     """
     cfg = load_config()
     if cfg is None:
-        return "⚠️ wanwan_skills 未配置（缺 plugins_configs/wanwan_skills.json）"
+        return "⚠️ WanWanKit 未配置（缺 plugins_configs/wanwan_skills.json）"
     if not cfg.bili_ready:
         return "⚠️ 缺 B站登录态：把 Cookie（SESSDATA; bili_jct）写进 bili_token_path 指向的文件"
 
@@ -729,7 +729,7 @@ async def bilibili_post_video(
     tags: str = "",
     private: bool = False,
 ) -> str:
-    """把 video_out 里的视频投稿到B站（API 三段式，不碰手机）。
+    """把 video_out 里的视频发布为B站稿件（API 三段式：上传+投稿，不碰手机）。
 
     只发主人确认过的标题/简介——本工具不代写。视频必须已在 video_out
     目录（video_generate 的产物）。先上传文件再提交稿件，一步到位；
@@ -745,7 +745,7 @@ async def bilibili_post_video(
     """
     cfg = load_config()
     if cfg is None:
-        return "⚠️ wanwan_skills 未配置（缺 plugins_configs/wanwan_skills.json）"
+        return "⚠️ WanWanKit 未配置（缺 plugins_configs/wanwan_skills.json）"
     if not cfg.bili_ready:
         return "⚠️ 缺 B站登录态：把 Cookie（SESSDATA; bili_jct）写进 bili_token_path 指向的文件"
 

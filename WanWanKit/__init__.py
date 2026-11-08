@@ -1,9 +1,9 @@
-"""wanwan_skills 插件入口：声明插件并导出工具模块。"""
+"""WanWanKit 插件入口：声明插件并导出工具模块。"""
 
 from gsuid_core.sv import Plugins
 
 Plugins(
-    name="wanwan_skills",
+    name="WanWanKit",
     allow_empty_prefix=True,
 )
 
@@ -13,5 +13,6 @@ from . import tasks as _tasks  # noqa: E402, F401
 from .tools import bilibili as _bilibili  # noqa: E402, F401
 from .tools import diary as _diary  # noqa: E402, F401
 from .tools import douyin as _douyin  # noqa: E402, F401
+from .tools import http as _http  # noqa: E402, F401
 from .tools import media as _media  # noqa: E402, F401
 from .tools import phone as _phone  # noqa: E402, F401

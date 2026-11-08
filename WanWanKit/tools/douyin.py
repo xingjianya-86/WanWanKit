@@ -364,7 +364,7 @@ async def douyin_reply(
     text: str,
     target: str = "",
 ) -> str:
-    """回复抖音当前视频评论区里的某条评论。
+    """回复并发送抖音当前视频评论区里的某条评论（保留回复前缀）。
 
     先用 douyin_browse 停在目标视频。全程不滑动换视频。
     回复归属是输入框预填的「回复 @作者」字面前缀——工具**追加正文不清
@@ -666,15 +666,19 @@ def _mark_post_used(title: str) -> None:
 async def _dy_run(args: tuple[str, ...]) -> tuple[int, str, str]:
     """在 douyin_venv 里跑一次驱动脚本，返回 (rc, stdout, stderr 尾巴)。
 
+    解释器与驱动脚本路径可配置（dy_python_path / dy_driver_path）。
     环境变量交给 legacy 模块自己纠正（它加载即设 PLAYWRIGHT_BROWSERS_PATH
     并清代理）；超时杀进程——发布状态未知时不返回中间态让模型乱猜。
     """
-    if not (Path(_DY_VENV_PY).is_file() and Path(_DY_DRIVER).is_file()):
+    cfg = load_config()
+    py = (cfg.dy_python_path if cfg else "") or _DY_VENV_PY
+    driver = (cfg.dy_driver_path if cfg else "") or _DY_DRIVER
+    if not (Path(py).is_file() and Path(driver).is_file()):
         return 127, "ERROR: 缺少抖音发布环境（douyin_venv 或 dy_driver.py）", ""
     try:
         proc = await asyncio.create_subprocess_exec(
-            _DY_VENV_PY,
-            _DY_DRIVER,
+            py,
+            driver,
             *args,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -741,7 +745,7 @@ async def douyin_post(
     """
     cfg = load_config()
     if cfg is None:
-        return "⚠️ wanwan_skills 未配置（缺 plugins_configs/wanwan_skills.json）"
+        return "⚠️ WanWanKit 未配置（缺 plugins_configs/wanwan_skills.json）"
 
     title_c = (title or "").strip()
     if not title_c:
@@ -752,10 +756,11 @@ async def douyin_post(
     vpath = Path((video or "").strip())
     if not str(vpath).strip() or not vpath.is_absolute():
         return "⚠️ 请提供 video 的绝对路径（用 video_out 目录里的文件）"
+    out_root = Path(cfg.video_out_dir or _VIDEO_OUT)
     try:
-        vpath.resolve().relative_to(_VIDEO_OUT.resolve())
+        vpath.resolve().relative_to(out_root.resolve())
     except (ValueError, OSError):
-        return f"⚠️ 只发 {_VIDEO_OUT} 目录里的视频（白名单外不上传）"
+        return f"⚠️ 只发 {out_root} 目录里的视频（白名单外不上传）"
     if not vpath.is_file():
         return f"⚠️ 视频文件不存在：{vpath}"
     if vpath.suffix.lower() not in (".mp4", ".mov", ".mkv", ".avi"):

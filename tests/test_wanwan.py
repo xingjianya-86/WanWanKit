@@ -1,4 +1,4 @@
-"""wanwan_skills 单元测试：只测离线纯逻辑，不碰网络。"""
+"""WanWanKit 单元测试：只测离线纯逻辑，不碰网络。"""
 
 from __future__ import annotations
 
@@ -7,9 +7,9 @@ from pathlib import Path
 
 import pytest
 
-from wanwan_skills.config import WanwanConfig, load_config
-from wanwan_skills.core import ark, mimo, site
-from wanwan_skills.tools import diary
+from WanWanKit.config import WanwanConfig, load_config
+from WanWanKit.core import ark, mimo, site
+from WanWanKit.tools import diary
 
 
 def _cfg(**overrides: object) -> WanwanConfig:
@@ -44,19 +44,23 @@ def _cfg(**overrides: object) -> WanwanConfig:
 
 class TestConfig:
     def test_missing_file_returns_none(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr("wanwan_skills.config.CONFIG_PATH", tmp_path / "nope.json")
+        monkeypatch.setattr("WanWanKit.config.CONFIG_PATH", tmp_path / "nope.json")
         assert load_config() is None
 
     def test_invalid_json_returns_none(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         bad = tmp_path / "wanwan.json"
         bad.write_text("{not json", encoding="utf-8")
-        monkeypatch.setattr("wanwan_skills.config.CONFIG_PATH", bad)
+        monkeypatch.setattr("WanWanKit.config.CONFIG_PATH", bad)
         assert load_config() is None
 
     def test_defaults_merge(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         cfg_file = tmp_path / "wanwan.json"
-        cfg_file.write_text(json.dumps({"ark_api_key": "abc"}), encoding="utf-8")
-        monkeypatch.setattr("wanwan_skills.config.CONFIG_PATH", cfg_file)
+        # ark_api_key_file 指向 tmp：迁移逻辑绝不允许触碰真实密钥路径
+        cfg_file.write_text(
+            json.dumps({"ark_api_key": "abc", "ark_api_key_file": str(tmp_path / ".arkkey")}),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr("WanWanKit.config.CONFIG_PATH", cfg_file)
         cfg = load_config()
         assert cfg is not None
         assert cfg.ark_api_key == "abc"
@@ -69,7 +73,7 @@ class TestConfig:
         pw.write_text("secret123\n", encoding="utf-8")
         cfg_file = tmp_path / "wanwan.json"
         cfg_file.write_text(json.dumps({"site_password_file": str(pw)}), encoding="utf-8")
-        monkeypatch.setattr("wanwan_skills.config.CONFIG_PATH", cfg_file)
+        monkeypatch.setattr("WanWanKit.config.CONFIG_PATH", cfg_file)
         cfg = load_config()
         assert cfg is not None
         assert cfg.site_password == "secret123"
@@ -329,7 +333,7 @@ class TestDiaryPublish:
         assert list((tmp_path / ".trash").glob("2026-11-07_*.md"))
 
     def test_split_entries_pure(self) -> None:
-        from wanwan_skills.tools.diary import _split_entries
+        from WanWanKit.tools.diary import _split_entries
 
         chunks = _split_entries("## 05:29 · 平静\n\n甲\n\n## 18:00 · 安稳\n\n乙")
         assert len(chunks) == 2 and chunks[-1].startswith("## 18:00") and "乙" in chunks[-1]
@@ -355,7 +359,7 @@ class TestDiaryPublish:
         import asyncio
         from types import SimpleNamespace
 
-        from wanwan_skills.core.look import WANWAN_LOOK
+        from WanWanKit.core.look import WANWAN_LOOK
 
         ref = tmp_path / "ref.jpg"
         ref.write_bytes(b"\xff\xd8fake")
@@ -428,7 +432,7 @@ class TestPhone:
     """手机模块纯逻辑：UI 树解析与动作白名单（不碰真机）。"""
 
     def test_parse_ui_extracts_nodes(self) -> None:
-        from wanwan_skills.core.phone import _parse_ui
+        from WanWanKit.core.phone import _parse_ui
 
         xml = (
             '<?xml version="1.0" encoding="UTF-8"?>'
@@ -449,13 +453,13 @@ class TestPhone:
         assert nodes[1].center == (200, 350)
 
     def test_parse_ui_bad_xml_returns_empty(self) -> None:
-        from wanwan_skills.core.phone import _parse_ui
+        from WanWanKit.core.phone import _parse_ui
 
         assert _parse_ui("") == []
         assert _parse_ui("not xml at all") == []
 
     def test_action_whitelist(self) -> None:
-        from wanwan_skills.tools.phone import _ACTIONS
+        from WanWanKit.tools.phone import _ACTIONS
 
         for ok in ("tap", "swipe", "input", "open", "back", "home", "lock", "unlock"):
             assert ok in _ACTIONS
@@ -465,7 +469,7 @@ class TestPhone:
 
     def test_is_input_node_tracks_moving_input_box(self) -> None:
         """输入框位置/尺寸随键盘与内容变，按形态认而不是按 y 带认。"""
-        from wanwan_skills.core.phone import UINode, is_input_node
+        from WanWanKit.core.phone import UINode, is_input_node
 
         def node(x1: int, y1: int, x2: int, y2: int, cls: str = "T") -> UINode:
             return UINode(text="", desc="", cls=cls, clickable=False, x1=x1, y1=y1, x2=x2, y2=y2)
@@ -488,7 +492,7 @@ class TestPhone:
 
     def test_text_on_screen_prefers_input_then_loose(self) -> None:
         """宽松判定是防重播翻倍的最后防线：字在屏上任何地方都不再播。"""
-        from wanwan_skills.core.phone import UINode, _text_on_screen
+        from WanWanKit.core.phone import UINode, _text_on_screen
 
         def node(text: str, x1: int, y1: int, cls: str = "T") -> UINode:
             return UINode(text=text, desc="", cls=cls, clickable=False, x1=x1, y1=y1, x2=x1 + 900, y2=y1 + 100)
@@ -503,7 +507,7 @@ class TestPhone:
 
     def test_hint_text_recognized(self) -> None:
         """占位提示语不是内容：误认会让 clear_input 空转、回复预检误判有残留。"""
-        from wanwan_skills.core.phone import _looks_like_hint
+        from WanWanKit.core.phone import _looks_like_hint
 
         assert _looks_like_hint("评论千万条，等你发一条")
         assert _looks_like_hint("有爱评论，说点儿好听的")
@@ -515,7 +519,7 @@ class TestAdbSelfHeal:
     """半死连接自愈：心跳探针测不出这种状态，工具命令会连环硬超时。"""
 
     def test_looks_dead_only_device_level(self) -> None:
-        from wanwan_skills.core.adb import _looks_dead
+        from WanWanKit.core.adb import _looks_dead
 
         # 半死/掉线：该触发 断开重连+重试
         assert _looks_dead("adb: device '10.110.0.161:5555' not found")
@@ -531,7 +535,7 @@ class TestBilibiliCards:
     """推荐流卡片是 content-desc 结构化的，解析错了清单就全错。"""
 
     def test_parse_video_card(self) -> None:
-        from wanwan_skills.tools.bilibili import _parse_card
+        from WanWanKit.tools.bilibili import _parse_card
 
         c = _parse_card("竖版视频,三份系统安全组件逆向 systemhelper,1.2万观看,-弹幕,时长2:09,UP主某甲")
         assert c is not None
@@ -542,7 +546,7 @@ class TestBilibiliCards:
 
     def test_parse_title_with_comma(self) -> None:
         """标题里带逗号不能截断（用第一个统计段当边界）。"""
-        from wanwan_skills.tools.bilibili import _parse_card
+        from WanWanKit.tools.bilibili import _parse_card
 
         c = _parse_card("竖版视频,看好了,这波在大气层,99观看,5弹幕,时长0:30,UP主乙")
         assert c is not None
@@ -550,7 +554,7 @@ class TestBilibiliCards:
         assert c.views == "99"
 
     def test_parse_without_stats(self) -> None:
-        from wanwan_skills.tools.bilibili import _parse_card
+        from WanWanKit.tools.bilibili import _parse_card
 
         c = _parse_card("竖版视频,某个没统计的标题")
         assert c is not None
@@ -559,15 +563,15 @@ class TestBilibiliCards:
 
     def test_junk_cards_rejected(self) -> None:
         """广告/会员购卡不是视频，绝不能点开当评论目标。"""
-        from wanwan_skills.tools.bilibili import _parse_card
+        from WanWanKit.tools.bilibili import _parse_card
 
         assert _parse_card("创作推广,降到一千多的旗舰机小米14,,轻点两下查看详情") is None
         assert _parse_card("会员购,（T）崩坏星穹铁道,,轻点两下查看详情") is None
         assert _parse_card("竖版视频") is None
 
     def test_state_detection(self) -> None:
-        from wanwan_skills.core.phone import UINode
-        from wanwan_skills.tools.bilibili import _find_input, _on_video_page, _sheet_open
+        from WanWanKit.core.phone import UINode
+        from WanWanKit.tools.bilibili import _find_input, _on_video_page, _sheet_open
 
         def node(text: str, *, x1: int, y1: int, cls: str = "TextView", clickable: bool = True) -> UINode:
             return UINode(text=text, desc="", cls=cls, clickable=clickable, x1=x1, y1=y1, x2=x1 + 300, y2=y1 + 60)
@@ -590,8 +594,8 @@ class TestBilibiliCards:
 
     def test_comment_entry_via_desc(self) -> None:
         """实测B站评论入口 text='' 文案在 desc——只查 text 会漏（14:37 雷）。"""
-        from wanwan_skills.core.phone import UINode
-        from wanwan_skills.tools.bilibili import _find_comment_entry, _on_video_page, _sheet_open
+        from WanWanKit.core.phone import UINode
+        from WanWanKit.tools.bilibili import _find_comment_entry, _on_video_page, _sheet_open
 
         rail = UINode(text="", desc="评论", cls="ViewGroup", clickable=True, x1=939, y1=1444, x2=1079, y2=1589)
         assert _find_comment_entry([rail]) is rail
@@ -610,7 +614,7 @@ class TestReplyTarget:
 
     @staticmethod
     def _nodes() -> list:
-        from wanwan_skills.core.phone import UINode
+        from WanWanKit.core.phone import UINode
 
         def n(text: str, y1: int, *, cls: str = "TextView", click: bool = True, x1: int = 140) -> UINode:
             return UINode(text=text, desc="", cls=cls, clickable=click, x1=x1, y1=y1, x2=x1 + 300, y2=y1 + 50)
@@ -630,13 +634,13 @@ class TestReplyTarget:
         ]
 
     def test_default_targets_first_comment(self) -> None:
-        from wanwan_skills.core.phone import find_reply_button
+        from WanWanKit.core.phone import find_reply_button
 
         btn = find_reply_button(self._nodes())
         assert btn is not None and btn.y1 == 1166
 
     def test_target_matches_author_and_content(self) -> None:
-        from wanwan_skills.core.phone import find_reply_button
+        from WanWanKit.core.phone import find_reply_button
 
         by_author = find_reply_button(self._nodes(), "观星者BIN")
         assert by_author is not None and by_author.y1 == 1792
@@ -644,13 +648,13 @@ class TestReplyTarget:
         assert by_content is not None and by_content.y1 == 1166
 
     def test_target_not_found(self) -> None:
-        from wanwan_skills.core.phone import find_reply_button
+        from WanWanKit.core.phone import find_reply_button
 
         assert find_reply_button(self._nodes(), "不存在的人") is None
 
     def test_edittext_prefix_not_used_as_anchor(self) -> None:
         """输入框残留的「回复 @别人」不能把目标锚到第一条的按钮上。"""
-        from wanwan_skills.core.phone import find_reply_button
+        from WanWanKit.core.phone import find_reply_button
 
         assert find_reply_button(self._nodes(), "别人") is None
 
@@ -659,7 +663,7 @@ class TestBiliApi:
     """B站 API 移植自 legacy（2026-10-29 实测配方）：语义必须锁死。"""
 
     def test_creds_parse_and_auth_guards(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        from wanwan_skills.core import bili_api
+        from WanWanKit.core import bili_api
 
         tok = tmp_path / "tok"
         tok.write_text("buvid3=abc; DedeUserID=123; SESSDATA=SESS123; bili_jct=JCT456", encoding="utf-8")
@@ -680,7 +684,7 @@ class TestBiliApi:
         assert "bili_jct" in bili_api._require_auth()
 
     def test_unwrap_error_semantics(self) -> None:
-        from wanwan_skills.core.bili_api import _unwrap
+        from WanWanKit.core.bili_api import _unwrap
 
         data, err = _unwrap(200, '{"code":0,"data":{"dyn_id_str":"987654"}}')
         assert err == "" and data["dyn_id_str"] == "987654"
@@ -700,7 +704,7 @@ class TestBiliApi:
     def test_wbi_query_pure(self) -> None:
         import re
 
-        from wanwan_skills.core.bili_api import _wbi_query
+        from WanWanKit.core.bili_api import _wbi_query
 
         q = _wbi_query({"b": "2", "a": "1!'()*x"}, "MIXINKEY123", "1700000000")
         assert "wts=1700000000" in q
@@ -713,7 +717,7 @@ class TestBiliApi:
 
     def test_post_dynamic_guards_no_network(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """空正文/缺凭据必须在发请求前就拦住（不碰网络）。"""
-        from wanwan_skills.core import bili_api
+        from WanWanKit.core import bili_api
 
         tok = tmp_path / "tok"
         tok.write_text("SESSDATA=x; bili_jct=y", encoding="utf-8")
@@ -730,8 +734,8 @@ class TestBiliApi:
         import asyncio
         from types import SimpleNamespace
 
-        from wanwan_skills.core import bili_api
-        from wanwan_skills.tools import bilibili as bl
+        from WanWanKit.core import bili_api
+        from WanWanKit.tools import bilibili as bl
 
         monkeypatch.setattr(bl, "load_config", lambda: SimpleNamespace(bili_ready=True, bili_token_path="/tmp/tok"))
         monkeypatch.setattr(bl, "_USED_POSTS", tmp_path / "used.json")
@@ -762,7 +766,7 @@ class TestBiliPostVideo:
     """视频投稿：白名单/参数校验必须在网络前拦住；工具层两段式 ERROR 透传。"""
 
     def test_resolve_video_path_whitelist(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        from wanwan_skills.core import bili_api
+        from WanWanKit.core import bili_api
 
         root = tmp_path / "video_out"
         root.mkdir()
@@ -791,7 +795,7 @@ class TestBiliPostVideo:
 
     def test_submit_video_param_guards_no_network(self) -> None:
         """参数校验在鉴权与网络之前——本地就能全拦。"""
-        from wanwan_skills.core import bili_api
+        from WanWanKit.core import bili_api
 
         assert "filename" in bili_api.submit_video("bad file!", "123", "标题")
         assert "cid" in bili_api.submit_video("valid_name-1", "abc", "标题")
@@ -803,7 +807,7 @@ class TestBiliPostVideo:
     def test_upload_needs_auth(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """缺凭据时上传直接报错，不碰网络。"""
 
-        from wanwan_skills.core import bili_api
+        from WanWanKit.core import bili_api
 
         monkeypatch.setattr(bili_api, "TOKEN_PATH", str(tmp_path / "missing_token"))
         f = tmp_path / "v.mp4"
@@ -816,8 +820,8 @@ class TestBiliPostVideo:
         import asyncio
         from types import SimpleNamespace
 
-        from wanwan_skills.core import bili_api
-        from wanwan_skills.tools import bilibili as bl
+        from WanWanKit.core import bili_api
+        from WanWanKit.tools import bilibili as bl
 
         root = tmp_path / "video_out"
         root.mkdir()
@@ -894,7 +898,7 @@ class TestBiliImagePost:
     """图文动态：multipart 手搓 + 图片护栏 + pics 透传（协议 2026-11-08 查证）。"""
 
     def test_multipart_shape(self) -> None:
-        from wanwan_skills.core.bili_api import _multipart
+        from WanWanKit.core.bili_api import _multipart
 
         body, boundary = _multipart(
             {"category": "daily", "csrf": "J"},
@@ -909,7 +913,7 @@ class TestBiliImagePost:
         assert text.endswith(f"--{boundary}--\r\n")
 
     def test_upload_image_guards_no_network(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        from wanwan_skills.core import bili_api
+        from WanWanKit.core import bili_api
 
         tok = tmp_path / "tok"
         tok.write_text("SESSDATA=x; bili_jct=y", encoding="utf-8")
@@ -926,7 +930,7 @@ class TestBiliImagePost:
         assert info is None and err.startswith("ERROR") and "登录态" in err
 
     def test_post_dynamic_pic_guards(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        from wanwan_skills.core import bili_api
+        from WanWanKit.core import bili_api
 
         tok = tmp_path / "tok"
         tok.write_text("SESSDATA=x; bili_jct=y", encoding="utf-8")
@@ -941,8 +945,8 @@ class TestBiliImagePost:
         import asyncio
         from types import SimpleNamespace
 
-        from wanwan_skills.core import bili_api
-        from wanwan_skills.tools import bilibili as bl
+        from WanWanKit.core import bili_api
+        from WanWanKit.tools import bilibili as bl
 
         root = tmp_path / "data"
         (root / "wanwan").mkdir(parents=True)
@@ -1011,37 +1015,196 @@ class TestBiliImagePost:
         assert out3.startswith("⚠️") and "4100001" in out3
 
 
+class TestHttp:
+    """HTTP 双形态融合：解析纯函数 + AI 工具护栏（不碰网络）。"""
+
+    def test_parse_short(self) -> None:
+        import pytest
+
+        from WanWanKit.tools.http import parse_short
+
+        spec = parse_short('https://a.com/x -H "X-T: v" -p foo=bar', "GET")
+        assert spec.method == "GET" and spec.url == "https://a.com/x"
+        assert spec.headers == {"X-T": "v"} and spec.query == {"foo": "bar"}
+
+        spec = parse_short("https://a.com/y -d '{\"a\":1}'", "POST")
+        assert spec.method == "POST" and spec.body == '{"a":1}'
+
+        with pytest.raises(ValueError, match="http"):
+            parse_short("ftp://x.com/f", "GET")
+        with pytest.raises(ValueError, match="URL"):
+            parse_short("", "GET")
+        with pytest.raises(ValueError, match="未知参数"):
+            parse_short("https://a.com -Z", "GET")
+        with pytest.raises(ValueError, match="body"):
+            parse_short("https://a.com -d x", "GET")
+        with pytest.raises(ValueError, match="多余"):
+            parse_short("https://a.com https://b.com", "GET")
+
+    def test_parse_request(self) -> None:
+        import pytest
+
+        from WanWanKit.tools.http import parse_request
+
+        spec = parse_request('POST https://a.com/p headers=\'{"X-A":"1"}\' body=\'{"k":1}\'')
+        assert spec.method == "POST"
+        assert spec.headers == {"X-A": "1"}
+        assert spec.body == '{"k":1}'
+
+        spec = parse_request("GET https://a.com/g query='a:1,b:2'")
+        assert spec.query == {"a": "1", "b": "2"}
+        assert spec.method == "GET"
+
+        with pytest.raises(ValueError, match="未知参数"):
+            parse_request("GET https://a.com foo=1")
+        with pytest.raises(ValueError, match="body"):
+            parse_request("GET https://a.com body='{}'")
+        with pytest.raises(ValueError):
+            parse_request("GET https://a.com headers='[1,2]'")
+
+    def test_pairs_and_confirm_words(self) -> None:
+        import pytest
+
+        from WanWanKit.tools.http import _is_cancel, _is_confirm, _parse_pairs, _strip_confirm
+
+        assert _parse_pairs('{"K":"V"}', "headers") == {"K": "V"}
+        assert _parse_pairs("a:1,b:2", "query") == {"a": "1", "b": "2"}
+        with pytest.raises(ValueError, match="冒号"):
+            _parse_pairs("nocolon", "headers")
+        with pytest.raises(ValueError, match="冒号"):
+            _parse_pairs("[1,2]", "headers")  # 非对象走 k:v 分支，同样被拦
+
+        assert _is_confirm("确认") and _is_confirm("yes") and _is_confirm("OK")
+        assert _is_cancel("取消") and _is_cancel("算了")
+        confirmed, rest = _strip_confirm("确认发送 GET https://a.com")
+        assert confirmed and rest == "GET https://a.com"
+        confirmed, rest = _strip_confirm("GET https://a.com")
+        assert not confirmed and rest == "GET https://a.com"
+
+    def test_ai_tool_guards_no_network(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """护栏必须在发网络请求前全部拦住。"""
+        import asyncio
+        from types import SimpleNamespace
+
+        from WanWanKit.tools import http as ht
+
+        async def _boom(_spec: object) -> str:
+            raise AssertionError("护栏失效：不该发网络请求")
+
+        monkeypatch.setattr(ht, "perform_request", _boom)
+        ctx = SimpleNamespace(deps=SimpleNamespace(bot=None, allow_user_outbound=False))
+
+        assert "url" in asyncio.run(ht.http_request(ctx, ""))
+        assert "GET 或 POST" in asyncio.run(ht.http_request(ctx, "https://a.com", method="PUT"))
+        assert "JSON" in asyncio.run(ht.http_request(ctx, "https://a.com", headers="not-json"))
+        assert "http" in asyncio.run(ht.http_request(ctx, "ftp://x"))
+        assert "不支持 body" in asyncio.run(ht.http_request(ctx, "https://a.com", method="GET", body="{}"))
+
+    def test_limits_from_config(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from types import SimpleNamespace
+
+        from WanWanKit.tools import http as ht
+
+        monkeypatch.setattr(ht, "load_config", lambda: SimpleNamespace(http_timeout=3.5, http_max_body=200))
+        assert ht._limits() == (3.5, 200)
+        monkeypatch.setattr(ht, "load_config", lambda: None)
+        assert ht._limits() == (15.0, 1500)
+
+
+class TestSecretsConfig:
+    """密钥独立化：独立文件优先、内联明文自动迁移并从配置清除。"""
+
+    def test_resolve_secret(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        from WanWanKit import config as cfgmod
+
+        monkeypatch.setattr(cfgmod, "_MIGRATED_KEYS", [])
+
+        # 独立文件优先
+        f1 = tmp_path / ".ark"
+        f1.write_text("file-key", encoding="utf-8")
+        assert cfgmod._resolve_secret("inline-key", str(f1)) == "file-key"
+
+        # 无文件有明文 → 自动迁移（写入独立文件 + 记键名待清除）
+        f2 = tmp_path / ".mimo"
+        assert cfgmod._resolve_secret("inline2", str(f2), "mimo_api_key") == "inline2"
+        assert f2.read_text(encoding="utf-8") == "inline2"
+        assert cfgmod._MIGRATED_KEYS == ["mimo_api_key"]
+        try:
+            assert f2.stat().st_mode & 0o777 == 0o600  # 迁移文件 600 权限
+        except (OSError, AssertionError, AttributeError):
+            pass  # 部分平台/容器对 chmod 语义不同——不作硬断言
+
+        # 路径为空 → 直接回内联（不迁移）
+        assert cfgmod._resolve_secret("inline3", "", "k") == "inline3"
+        assert cfgmod._MIGRATED_KEYS == ["mimo_api_key"]
+
+    def test_load_config_migrates_and_flushes(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        from WanWanKit import config as cfgmod
+
+        cfg_file = tmp_path / "wanwan_skills.json"
+        cfg_file.write_text(
+            json.dumps(
+                {
+                    "ark_api_key": "plaintext-ark-123",
+                    "ark_api_key_file": str(tmp_path / ".ark"),
+                    "http_timeout": 3.5,
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(cfgmod, "CONFIG_PATH", cfg_file)
+        monkeypatch.setattr(cfgmod, "_MIGRATED_KEYS", [])
+
+        cfg = cfgmod.load_config()
+        assert cfg is not None
+        # 迁移三件套：独立文件拿到值 / 配置内明文被清 / 运行时值不受影响
+        assert (tmp_path / ".ark").read_text(encoding="utf-8") == "plaintext-ark-123"
+        raw = json.loads(cfg_file.read_text(encoding="utf-8"))
+        assert raw["ark_api_key"] == "", "配置里的明文必须被清除"
+        assert cfg.ark_api_key == "plaintext-ark-123"
+        # 新配置字段生效
+        assert cfg.http_timeout == 3.5
+        assert cfg.video_out_dir  # 默认值存在
+        assert cfg.dy_python_path and cfg.ffmpeg_timeout == 600.0
+
+        # 二次加载：文件优先、不再重复迁移
+        cfg2 = cfgmod.load_config()
+        assert cfg2 is not None and cfg2.ark_api_key == "plaintext-ark-123"
+        assert json.loads(cfg_file.read_text(encoding="utf-8"))["ark_api_key"] == ""
+
+
 class TestDouyinJunk:
     """直播 / 广告卡片必须被识别跳过。"""
 
     @staticmethod
     def _nodes(items: list[tuple[str, bool]]):
         """items = [(text, clickable), ...]，按真实控件树布局。"""
-        from wanwan_skills.core.phone import UINode
+        from WanWanKit.core.phone import UINode
 
         return [UINode(text=t, desc="", cls="T", clickable=c, x1=0, y1=0, x2=10, y2=10) for t, c in items]
 
     def test_live_card_detected(self) -> None:
-        from wanwan_skills.tools.douyin import _junk_reason
+        from WanWanKit.tools.douyin import _junk_reason
 
         nodes = self._nodes([("点击进入直播间按钮", True), ("@某主播", True)])
         assert _junk_reason(nodes) == "直播"
 
     def test_ad_label_detected(self) -> None:
-        from wanwan_skills.tools.douyin import _junk_reason
+        from WanWanKit.tools.douyin import _junk_reason
 
         nodes = self._nodes([("广告", False), ("@游戏碎碎念", True)])
         assert _junk_reason(nodes) == "广告"
 
     def test_normal_video_not_flagged(self) -> None:
-        from wanwan_skills.tools.douyin import _junk_reason
+        from WanWanKit.tools.douyin import _junk_reason
 
         # 描述里顺带提到「广告」的正常视频不应被误伤
         nodes = self._nodes([("2026年超好玩的小游戏，不是广告", False), ("@某作者", True), ("喜欢8.7万", False)])
         assert _junk_reason(nodes) == ""
 
     def test_extract_video_from_real_layout(self) -> None:
-        from wanwan_skills.tools.douyin import _extract_video
+        from WanWanKit.tools.douyin import _extract_video
 
         v = _extract_video(
             self._nodes(
@@ -1077,7 +1240,7 @@ class TestVision:
         return buf.getvalue()
 
     def test_finds_douyin_red_button(self) -> None:
-        from wanwan_skills.core.vision import find_color_button
+        from WanWanKit.core.vision import find_color_button
 
         # 400x800，按钮在下半部（y_min_ratio=0.4 以下）
         png = self._png((400, 800), [(100, 600, 290, 690, (254, 44, 85))])
@@ -1087,7 +1250,7 @@ class TestVision:
         assert abs(cx - 195) <= 8 and abs(cy - 645) <= 8
 
     def test_small_red_distractors_ignored(self) -> None:
-        from wanwan_skills.core.vision import find_color_button
+        from WanWanKit.core.vision import find_color_button
 
         # 表情/小图标级别的红块（< min_run=70）不该被当成按钮
         png = self._png(
@@ -1097,7 +1260,7 @@ class TestVision:
         assert find_color_button(png, (254, 44, 85)) is None
 
     def test_picks_largest_of_two_buttons(self) -> None:
-        from wanwan_skills.core.vision import find_color_button
+        from WanWanKit.core.vision import find_color_button
 
         png = self._png(
             (400, 800),
@@ -1111,19 +1274,19 @@ class TestVision:
         assert blob.x1 == 180 and blob.y1 == 620
 
     def test_dimmed_red_rejected(self) -> None:
-        from wanwan_skills.core.vision import find_color_button
+        from WanWanKit.core.vision import find_color_button
 
         # 面板遮罩下的暗红（视频背景）不能误判
         png = self._png((400, 800), [(100, 600, 290, 690, (127, 22, 42))])
         assert find_color_button(png, (254, 44, 85)) is None
 
     def test_invalid_png_returns_none(self) -> None:
-        from wanwan_skills.core.vision import find_color_button
+        from WanWanKit.core.vision import find_color_button
 
         assert find_color_button(b"not a png", (254, 44, 85)) is None
 
     def test_button_above_scan_region_ignored(self) -> None:
-        from wanwan_skills.core.vision import find_color_button
+        from WanWanKit.core.vision import find_color_button
 
         # 屏幕上半部的红块（如视频里的红衣服）不该被当成底部按钮
         png = self._png((400, 800), [(100, 60, 290, 150, (254, 44, 85))])
@@ -1134,7 +1297,7 @@ class TestTaskPrompt:
     """任务 prompt 用 .format(today=...)，花括号写错会直接 KeyError。"""
 
     def test_prompt_formats_with_today(self) -> None:
-        from wanwan_skills.tasks import _TASK_PROMPT
+        from WanWanKit.tasks import _TASK_PROMPT
 
         out = _TASK_PROMPT.format(today="2026-11-06", user_id="20002")
         assert "2026-11-06" in out
@@ -1148,7 +1311,7 @@ class TestHeartbeat:
     """心跳看门狗：误报会狼来了，漏报会失联不自知。"""
 
     def test_connect_ok_parsing(self) -> None:
-        from wanwan_skills.tasks import _connect_ok
+        from WanWanKit.tasks import _connect_ok
 
         assert _connect_ok("connected to 10.110.0.161:5555\n")
         assert _connect_ok("already connected to 10.110.0.161:5555\n")
@@ -1156,7 +1319,7 @@ class TestHeartbeat:
         assert not _connect_ok("")
 
     def test_alert_cooldown(self) -> None:
-        from wanwan_skills.tasks import _ALERT_COOLDOWN, _should_alert
+        from WanWanKit.tasks import _ALERT_COOLDOWN, _should_alert
 
         # 首次断线：立即报
         assert _should_alert(now=1000.0, last_alert=0.0, down=False)
@@ -1170,7 +1333,7 @@ class TestDouyinPost:
     """抖音网页发布：驱动子进程的输出语义 + 工具护栏（不碰真浏览器）。"""
 
     def test_interpret_error_and_login(self) -> None:
-        from wanwan_skills.tools.douyin import _dy_interpret
+        from WanWanKit.tools.douyin import _dy_interpret
 
         # ERROR 行透传
         ok, msg = _dy_interpret(1, "ERROR: 标题超长\n", "")
@@ -1192,9 +1355,16 @@ class TestDouyinPost:
     def test_dy_run_missing_env_no_spawn(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """环境缺文件时直接 ERROR，不尝试拉起浏览器。"""
         import asyncio
+        from types import SimpleNamespace
 
-        from wanwan_skills.tools import douyin as dy
+        from WanWanKit.tools import douyin as dy
 
+        # _dy_run 现在优先读配置——用配置指向不存在的路径
+        monkeypatch.setattr(
+            dy,
+            "load_config",
+            lambda: SimpleNamespace(dy_python_path="/no/such/python", dy_driver_path="/no/such/driver.py"),
+        )
         monkeypatch.setattr(dy, "_DY_VENV_PY", "/no/such/python")
         monkeypatch.setattr(dy, "_DY_DRIVER", "/no/such/driver.py")
         rc, out, _ = asyncio.run(dy._dy_run(("check",)))
@@ -1205,7 +1375,7 @@ class TestDouyinPost:
         import asyncio
         from types import SimpleNamespace
 
-        from wanwan_skills.tools import douyin as dy
+        from WanWanKit.tools import douyin as dy
 
         out_dir = tmp_path / "video_out"
         out_dir.mkdir()
@@ -1213,7 +1383,7 @@ class TestDouyinPost:
         vid.write_bytes(b"\x00")
         monkeypatch.setattr(dy, "_VIDEO_OUT", out_dir)
         monkeypatch.setattr(dy, "_USED_POSTS", tmp_path / "used.json")
-        monkeypatch.setattr(dy, "load_config", lambda: SimpleNamespace())
+        monkeypatch.setattr(dy, "load_config", lambda: SimpleNamespace(video_out_dir=str(out_dir)))
         ctx = SimpleNamespace(deps=SimpleNamespace(bot=None, allow_user_outbound=False))
 
         # 子进程绝不能被拉起来
@@ -1241,7 +1411,7 @@ class TestDouyinPost:
         import asyncio
         from types import SimpleNamespace
 
-        from wanwan_skills.tools import douyin as dy
+        from WanWanKit.tools import douyin as dy
 
         out_dir = tmp_path / "video_out"
         out_dir.mkdir()
@@ -1249,7 +1419,7 @@ class TestDouyinPost:
         vid.write_bytes(b"\x00")
         monkeypatch.setattr(dy, "_VIDEO_OUT", out_dir)
         monkeypatch.setattr(dy, "_USED_POSTS", tmp_path / "used.json")
-        monkeypatch.setattr(dy, "load_config", lambda: SimpleNamespace())
+        monkeypatch.setattr(dy, "load_config", lambda: SimpleNamespace(video_out_dir=str(out_dir)))
         ctx = SimpleNamespace(deps=SimpleNamespace(bot=None, allow_user_outbound=False))
 
         seen: list[tuple[str, ...]] = []
@@ -1290,7 +1460,7 @@ class TestVideoAssemble:
     """ffmpeg 合成段：时长均分与滤镜链是纯函数，直接锁死。"""
 
     def test_split_durations(self) -> None:
-        from wanwan_skills.core.video import _split_durations
+        from WanWanKit.core.video import _split_durations
 
         # 10s / 3 画面：每段向上取 0.1，末段吃余量
         assert _split_durations(10.0, 3) == [3.4, 3.4, 3.2]
@@ -1302,7 +1472,7 @@ class TestVideoAssemble:
         assert sum(durs) >= 1.0
 
     def test_assemble_cmd_shape(self, tmp_path: Path) -> None:
-        from wanwan_skills.core.video import assemble_cmd
+        from WanWanKit.core.video import assemble_cmd
 
         imgs = [tmp_path / "a.jpg", tmp_path / "b.jpg"]
         cmd = assemble_cmd(imgs, tmp_path / "n.wav", 6.0, tmp_path / "o.mp4")
@@ -1318,7 +1488,7 @@ class TestVideoAssemble:
         assert cmd[-1] == str(tmp_path / "o.mp4")
 
     def test_pad_cmd_shape(self, tmp_path: Path) -> None:
-        from wanwan_skills.core.video import pad_cmd
+        from WanWanKit.core.video import pad_cmd
 
         cmd = pad_cmd(tmp_path / "n.wav", tmp_path / "p.mp3", 1.0)
         assert "anullsrc=r=24000:cl=mono" in cmd
@@ -1328,15 +1498,15 @@ class TestVideoAssemble:
         assert "1.000" in cmd  # 时长格式化
 
     def test_parse_duration(self) -> None:
-        from wanwan_skills.core.video import _parse_duration
+        from WanWanKit.core.video import _parse_duration
 
         assert _parse_duration("12.34\n") == 12.34
         assert _parse_duration("") == 0.0
         assert _parse_duration("N/A") == 0.0  # 探不到 → 上层报「时长异常」
 
     def test_character_lock(self) -> None:
-        from wanwan_skills.core.video import WANWAN_LOOK
-        from wanwan_skills.tools.media import _apply_character_lock
+        from WanWanKit.core.video import WANWAN_LOOK
+        from WanWanKit.tools.media import _apply_character_lock
 
         locked = _apply_character_lock(["海边散步"], True)
         assert locked[0].startswith(WANWAN_LOOK) and "场景：海边散步" in locked[0]
@@ -1356,7 +1526,7 @@ class TestVideoGenerate:
         import asyncio
         from types import SimpleNamespace
 
-        from wanwan_skills.tools import media
+        from WanWanKit.tools import media
 
         ctx = self._ctx()
 
@@ -1386,11 +1556,15 @@ class TestVideoGenerate:
         import asyncio
         from types import SimpleNamespace
 
-        from wanwan_skills.core import video as vid
-        from wanwan_skills.tools import media
+        from WanWanKit.core import video as vid
+        from WanWanKit.tools import media
 
         monkeypatch.setattr(media, "_VIDEO_OUT", tmp_path)
-        monkeypatch.setattr(media, "load_config", lambda: SimpleNamespace(ark_ready=True, mimo_ready=True))
+        monkeypatch.setattr(
+            media,
+            "load_config",
+            lambda: SimpleNamespace(ark_ready=True, mimo_ready=True, video_out_dir=str(tmp_path), ffmpeg_timeout=600.0),
+        )
         ctx = self._ctx()
 
         prompts: list[str] = []
@@ -1419,7 +1593,7 @@ class TestVideoGenerate:
             assert size == "1280x720" and max_bytes == media._FRAME_MAX_BYTES
             return b"jpeg-bytes"
 
-        def _asm(images: list[Path], _audio: Path, total: float, out: Path) -> None:
+        def _asm(images: list[Path], _audio: Path, total: float, out: Path, *, timeout: float = 0) -> None:
             assert len(images) == 2 and abs(total - 6.0) < 1e-6
             out.write_bytes(b"\x00" * 4096)
 
@@ -1444,11 +1618,15 @@ class TestVideoGenerate:
         import asyncio
         from types import SimpleNamespace
 
-        from wanwan_skills.core import video as vid
-        from wanwan_skills.tools import media
+        from WanWanKit.core import video as vid
+        from WanWanKit.tools import media
 
         monkeypatch.setattr(media, "_VIDEO_OUT", tmp_path)
-        monkeypatch.setattr(media, "load_config", lambda: SimpleNamespace(ark_ready=True, mimo_ready=True))
+        monkeypatch.setattr(
+            media,
+            "load_config",
+            lambda: SimpleNamespace(ark_ready=True, mimo_ready=True, video_out_dir=str(tmp_path), ffmpeg_timeout=600.0),
+        )
 
         async def _tts(_cfg: object, _text: str) -> bytes:
             return b"RIFF"

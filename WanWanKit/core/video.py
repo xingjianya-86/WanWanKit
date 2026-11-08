@@ -145,15 +145,22 @@ def assemble_cmd(images: list[Path], audio: Path, total: float, out: Path) -> li
     return cmd
 
 
-def assemble(images: list[Path], audio: Path, total: float, out: Path) -> None:
-    """执行合成。失败抛 VideoError（带 ffmpeg stderr 尾巴）。"""
+def assemble(
+    images: list[Path],
+    audio: Path,
+    total: float,
+    out: Path,
+    *,
+    timeout: float = FF_TIMEOUT,
+) -> None:
+    """执行合成（timeout 可由配置 ffmpeg_timeout 覆盖）。失败抛 VideoError。"""
     if not images:
         raise VideoError("没有场景图，无法合成")
     proc = subprocess.run(
         assemble_cmd(images, audio, total, out),
         capture_output=True,
         text=True,
-        timeout=FF_TIMEOUT,
+        timeout=timeout,
     )
     if proc.returncode != 0:
         raise VideoError(f"ffmpeg 失败: {(proc.stderr or '')[-500:]}")

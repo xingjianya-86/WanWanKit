@@ -85,7 +85,7 @@ async def selfie_generate(
     """
     cfg = load_config()
     if cfg is None:
-        return "⚠️ wanwan_skills 未配置（缺 plugins_configs/wanwan_skills.json）"
+        return "⚠️ WanWanKit 未配置（缺 plugins_configs/wanwan_skills.json）"
     if not cfg.ark_ready:
         return "⚠️ 未配置 ark_api_key，无法生图"
     if not cfg.ref_image or not Path(cfg.ref_image).exists():
@@ -146,7 +146,7 @@ async def voice_say(
     """
     cfg = load_config()
     if cfg is None:
-        return "⚠️ wanwan_skills 未配置（缺 plugins_configs/wanwan_skills.json）"
+        return "⚠️ WanWanKit 未配置（缺 plugins_configs/wanwan_skills.json）"
     if not cfg.mimo_ready:
         return "⚠️ 未配置 mimo_api_key 或音色样本缺失，无法配音"
 
@@ -203,7 +203,7 @@ async def video_generate(
     """
     cfg = load_config()
     if cfg is None:
-        return "⚠️ wanwan_skills 未配置（缺 plugins_configs/wanwan_skills.json）"
+        return "⚠️ WanWanKit 未配置（缺 plugins_configs/wanwan_skills.json）"
     if not cfg.ark_ready:
         return "⚠️ 未配置 ark_api_key，无法生图"
     if not cfg.mimo_ready:
@@ -226,10 +226,11 @@ async def video_generate(
 
     clean_scenes = _apply_character_lock(clean_scenes, character_lock)
 
+    out_root = Path(cfg.video_out_dir or _VIDEO_OUT)
     ts = time.strftime("%Y%m%d_%H%M%S")
-    work = _VIDEO_OUT / f"tmp_{ts}_{uuid.uuid4().hex[:6]}"
+    work = out_root / f"tmp_{ts}_{uuid.uuid4().hex[:6]}"
     work.mkdir(parents=True, exist_ok=True)
-    out = _VIDEO_OUT / f"video_{ts}_{uuid.uuid4().hex[:4]}.mp4"
+    out = out_root / f"video_{ts}_{uuid.uuid4().hex[:4]}.mp4"
     try:
         # 1) 配音（先配音：拿到时长才能切画面）
         audio = work / "narration.wav"
@@ -265,7 +266,7 @@ async def video_generate(
             imgs.append(p)
 
         # 3) 合成
-        await asyncio.to_thread(video.assemble, imgs, audio, total, out)
+        await asyncio.to_thread(video.assemble, imgs, audio, total, out, timeout=cfg.ffmpeg_timeout)
         size = out.stat().st_size
         dur = await asyncio.to_thread(video.duration, out)
         if dur < 1.0:

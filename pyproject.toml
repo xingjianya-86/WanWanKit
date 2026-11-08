@@ -1,12 +1,21 @@
 [project]
-name = "wanwan_skills"
-version = "0.1.0"
-description = "GsCore 人格技能：日记 / 配图 / 语音，含每日日记定时任务"
+name = "WanWanKit"
+version = "1.0.0"
+description = "GsCore 人格能力插件：晚晚日记 / 语音 / 自拍 / 短视频生成，抖音与 B 站刷评回 + 图文视频发布，手机自动化与 HTTP 工具"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "xingjianya-86" }]
+keywords = ["GsCore", "插件", "晚晚", "AI", "短视频", "社交媒体", "手机自动化"]
 requires-python = ">=3.11"
 dependencies = [
     "httpx",
     "Pillow",
 ]
+
+# 系统级能力依赖（不在 Python 依赖里，详见 docs/INSTALL.md）：
+# - 手机自动化：宿主 adb over TCP（phone_serial 配置）
+# - 短视频生成：宿主 ffmpeg / ffprobe
+# - 抖音发布：独立 douyin_venv（patchright，与主环境隔离）
 
 [tool.ruff]
 line-length = 120
